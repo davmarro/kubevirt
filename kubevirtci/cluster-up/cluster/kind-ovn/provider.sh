@@ -49,12 +49,22 @@ aarch64* | arm64*)
     ;;
 esac
 
+KIND_HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+case ${KIND_HOST_OS} in
+linux | darwin)
+    ;;
+*)
+    echo "unsupported host OS '${KIND_HOST_OS}' for kind binary download"
+    exit 1
+    ;;
+esac
+
 function fetch_kind() {
     mkdir -p $KIND_PATH
-    current_kind_version=$($KIND_PATH/kind --version |& awk '{print $3}')
+    current_kind_version=$($KIND_PATH/kind --version 2>&1 | awk '{print $3}')
     if [[ $current_kind_version != $KIND_VERSION ]]; then
         echo "Downloading kind v$KIND_VERSION"
-        curl -LSs https://github.com/kubernetes-sigs/kind/releases/download/v$KIND_VERSION/kind-linux-${ARCH} -o "$KIND_PATH/kind"
+        curl -LSs "https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VERSION}/kind-${KIND_HOST_OS}-${ARCH}" -o "$KIND_PATH/kind"
         chmod +x "$KIND_PATH/kind"
     fi
     export PATH=$KIND_PATH:$PATH

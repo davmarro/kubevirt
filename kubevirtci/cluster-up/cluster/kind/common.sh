@@ -31,6 +31,16 @@ aarch64* | arm64*)
     ;;
 esac
 
+KIND_HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+case ${KIND_HOST_OS} in
+linux | darwin)
+    ;;
+*)
+    echo "unsupported host OS '${KIND_HOST_OS}' for kind binary download"
+    exit 1
+    ;;
+esac
+
 NODE_CMD="${CRI_BIN} exec -it -d "
 export KIND_MANIFESTS_DIR="${KUBEVIRTCI_PATH}/cluster/kind/manifests"
 export KIND_NODE_CLI="${CRI_BIN} exec -it "
@@ -39,6 +49,13 @@ export KUBEVIRTCI_CONFIG_PATH
 KIND_DEFAULT_NETWORK="kind"
 
 KUBECTL="${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubectl --kubeconfig=${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubeconfig"
+if [[ "${KIND_HOST_OS}" == "darwin" ]]; then
+    if ! command -v kubectl >/dev/null 2>&1; then
+        echo "kubectl is required on macOS hosts"
+        exit 1
+    fi
+    KUBECTL="$(command -v kubectl) --kubeconfig=${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubeconfig"
+fi
 
 REGISTRY_NAME=${CLUSTER_NAME}-registry
 
@@ -70,10 +87,10 @@ function _wait_containers_ready {
 
 function _fetch_kind() {
     KIND="${KUBEVIRTCI_CONFIG_PATH}"/"$KUBEVIRT_PROVIDER"/.kind
-    current_kind_version=$($KIND --version |& awk '{print $3}')
+    current_kind_version=$($KIND --version 2>&1 | awk '{print $3}')
     if [[ $current_kind_version != $KIND_VERSION ]]; then
         echo "Downloading kind v$KIND_VERSION"
-        curl -LSs https://github.com/kubernetes-sigs/kind/releases/download/v$KIND_VERSION/kind-linux-${ARCH} -o "$KIND"
+        curl -LSs "https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VERSION}/kind-${KIND_HOST_OS}-${ARCH}" -o "$KIND"
         chmod +x "$KIND"
     fi
 }
@@ -212,23 +229,24 @@ function setup_kind() {
         $KIND -v 9 delete cluster --name=${CLUSTER_NAME} \
         && $KIND -v 9 create cluster --retain --name=${CLUSTER_NAME} --config=${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/kind.yaml --image=$KIND_NODE_IMAGE --kubeconfig=${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubeconfig )
 
-    if ${CRI_BIN} exec ${CLUSTER_NAME}-control-plane ls /usr/bin/kubectl > /dev/null; then
-        kubectl_path=/usr/bin/kubectl
-    elif ${CRI_BIN} exec ${CLUSTER_NAME}-control-plane ls /bin/kubectl > /dev/null; then
-        kubectl_path=/bin/kubectl
-    else
-        echo "Error: kubectl not found on node, exiting"
-        exit 1
+    if [[ "${KIND_HOST_OS}" != "darwin" ]]; then
+        if ${CRI_BIN} exec ${CLUSTER_NAME}-control-plane ls /usr/bin/kubectl > /dev/null; then
+            kubectl_path=/usr/bin/kubectl
+        elif ${CRI_BIN} exec ${CLUSTER_NAME}-control-plane ls /bin/kubectl > /dev/null; then
+            kubectl_path=/bin/kubectl
+        else
+            echo "Error: kubectl not found on node, exiting"
+            exit 1
+        fi
+
+        ${CRI_BIN} cp ${CLUSTER_NAME}-control-plane:$kubectl_path ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubectl
+        chmod u+x ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubectl
     fi
-
-    ${CRI_BIN} cp ${CLUSTER_NAME}-control-plane:$kubectl_path ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubectl
-
-    chmod u+x ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubectl
 
     if [ $KUBEVIRT_WITH_KIND_ETCD_IN_MEMORY == "true" ]; then
         for node in $(_get_nodes | awk '{print $1}' | grep control-plane); do
             echo "[$node] Checking KIND cluster etcd data is mounted to RAM: $ETCD_IN_MEMORY_DATA_DIR"
-            ${CRI_BIN} exec $node df -h $(dirname $ETCD_IN_MEMORY_DATA_DIR) | grep -P '(tmpfs|ramfs)'
+            ${CRI_BIN} exec $node df -h $(dirname $ETCD_IN_MEMORY_DATA_DIR) | grep -E '(tmpfs|ramfs)'
             [ $(echo $?) != 0 ] && echo "[$node] etcd data directory is not mounted to RAM" && return 1
 
             ${CRI_BIN} exec $node du -h $ETCD_IN_MEMORY_DATA_DIR
