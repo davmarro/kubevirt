@@ -21,12 +21,18 @@ package kvm
 
 import (
 	"fmt"
+	"runtime"
 
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/log"
 
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/api"
 )
+
+// tcgFallbackCPUModelAarch64 is used when KVM is unavailable on aarch64.
+// host-passthrough requires KVM on aarch64 and is rejected by QEMU TCG.
+// cortex-a57 is a well-supported ARMv8-A named model that works in TCG mode.
+const tcgFallbackCPUModelAarch64 = "cortex-a57"
 
 type KvmDomainConfigurator struct {
 	allowEmulation bool
@@ -48,6 +54,17 @@ func (k KvmDomainConfigurator) Configure(vmi *v1.VirtualMachineInstance, domain 
 			logger := log.DefaultLogger()
 			logger.Infof("kvm not present. Using software emulation.")
 			domain.Spec.Type = "qemu"
+
+			// On aarch64, host-passthrough is not supported by QEMU TCG.
+			// Automatically fall back to a named CPU model so the domain can start.
+			if runtime.GOARCH == "arm64" && domain.Spec.CPU.Mode == v1.CPUModeHostPassthrough {
+				logger.Infof(
+					"aarch64 TCG: switching CPU mode from %q to named model %q (host-passthrough requires KVM)",
+					v1.CPUModeHostPassthrough, tcgFallbackCPUModelAarch64,
+				)
+				domain.Spec.CPU.Mode = "custom"
+				domain.Spec.CPU.Model = tcgFallbackCPUModelAarch64
+			}
 		} else {
 			return fmt.Errorf("kvm not present")
 		}

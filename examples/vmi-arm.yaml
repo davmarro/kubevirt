@@ -7,6 +7,8 @@ metadata:
   name: vmi-arm
 spec:
   domain:
+    cpu:
+      model: "cortex-a57"
     devices:
       disks:
       - disk:
@@ -24,7 +26,7 @@ spec:
   terminationGracePeriodSeconds: 0
   volumes:
   - containerDisk:
-      image: registry:5000/kubevirt/cirros-container-disk-demo:devel
+      image: quay.io/kubevirt/cirros-container-disk-demo:v1.8.3
     name: containerdisk
   - cloudInitNoCloud:
       userData: |

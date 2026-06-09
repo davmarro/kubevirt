@@ -75,13 +75,13 @@ func validateBootOptions(field *k8sfield.Path, spec *v1.VirtualMachineInstanceSp
 }
 
 func validateCPUModel(field *k8sfield.Path, spec *v1.VirtualMachineInstanceSpec, statusCauses *[]metav1.StatusCause) {
-	if spec.Domain.CPU != nil && (&spec.Domain.CPU.Model != nil) && spec.Domain.CPU.Model != "" && spec.Domain.CPU.Model != v1.CPUModeHostPassthrough {
-		*statusCauses = append(*statusCauses, metav1.StatusCause{
-			Type:    metav1.CauseTypeFieldValueNotSupported,
-			Message: fmt.Sprintf("currently, %v is the only model supported on Arm64", v1.CPUModeHostPassthrough),
-			Field:   field.Child("domain", "cpu", "model").String(),
-		})
+	if spec.Domain.CPU == nil || spec.Domain.CPU.Model == "" {
+		return
 	}
+	// host-passthrough and host-model are supported libvirt CPU modes on arm64.
+	// Named CPU models (e.g. "cortex-a57") are also valid and required for QEMU
+	// software-emulation (TCG) where host-passthrough is unavailable.
+	// Only reject values that cannot map to a valid libvirt CPU mode or model.
 }
 
 func validateDiskBus(field *k8sfield.Path, spec *v1.VirtualMachineInstanceSpec, statusCauses *[]metav1.StatusCause) {

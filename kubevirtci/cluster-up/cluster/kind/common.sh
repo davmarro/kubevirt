@@ -31,12 +31,16 @@ aarch64* | arm64*)
     ;;
 esac
 
-KIND_HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-case ${KIND_HOST_OS} in
-linux | darwin)
+HOST_OS=$(uname -s)
+case ${HOST_OS} in
+Linux*)
+    KIND_OS="linux"
+    ;;
+Darwin*)
+    KIND_OS="darwin"
     ;;
 *)
-    echo "unsupported host OS '${KIND_HOST_OS}' for kind binary download"
+    echo "unsupported host OS for kind binary download: ${HOST_OS}"
     exit 1
     ;;
 esac
@@ -87,10 +91,10 @@ function _wait_containers_ready {
 
 function _fetch_kind() {
     KIND="${KUBEVIRTCI_CONFIG_PATH}"/"$KUBEVIRT_PROVIDER"/.kind
-    current_kind_version=$($KIND --version 2>&1 | awk '{print $3}')
+    current_kind_version=$("$KIND" --version 2>&1 | awk '{print $3}')
     if [[ $current_kind_version != $KIND_VERSION ]]; then
         echo "Downloading kind v$KIND_VERSION"
-        curl -LSs "https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VERSION}/kind-${KIND_HOST_OS}-${ARCH}" -o "$KIND"
+        curl -LSs https://github.com/kubernetes-sigs/kind/releases/download/v$KIND_VERSION/kind-${KIND_OS}-${ARCH} -o "$KIND"
         chmod +x "$KIND"
     fi
 }
@@ -243,7 +247,26 @@ function setup_kind() {
         chmod u+x ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubectl
     fi
 
-    if [ $KUBEVIRT_WITH_KIND_ETCD_IN_MEMORY == "true" ]; then
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        if command -v kubectl >/dev/null 2>&1; then
+            cat >"${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubectl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec kubectl "$@"
+EOF
+        else
+            echo "Error: local kubectl binary not found in PATH on macOS"
+            echo "Please install kubectl and retry cluster-up"
+            exit 1
+        fi
+    else
+        ${CRI_BIN} cp ${CLUSTER_NAME}-control-plane:$kubectl_path ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubectl
+    fi
+
+    chmod u+x "${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/.kubectl"
+
+    # On macOS with Podman, kind nodes run inside a VM and tmpfs detection is unreliable
+    if [ $KUBEVIRT_WITH_KIND_ETCD_IN_MEMORY == "true" ] && [[ "$(uname -s)" != "Darwin" ]]; then
         for node in $(_get_nodes | awk '{print $1}' | grep control-plane); do
             echo "[$node] Checking KIND cluster etcd data is mounted to RAM: $ETCD_IN_MEMORY_DATA_DIR"
             ${CRI_BIN} exec $node df -h $(dirname $ETCD_IN_MEMORY_DATA_DIR) | grep -E '(tmpfs|ramfs)'
@@ -296,12 +319,15 @@ function setup_kind() {
 }
 
 function _add_extra_mounts() {
-  cat <<EOF >> ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/kind.yaml
+  # /var/log/audit is Linux-only; on macOS the Podman VM may not have this path
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    cat <<EOF >> ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/kind.yaml
   extraMounts:
   - containerPath: /var/log/audit
     hostPath: /var/log/audit
     readOnly: true
 EOF
+  fi
 
     if [[ "$KUBEVIRT_PROVIDER" =~ sriov.* || "$KUBEVIRT_PROVIDER" =~ vgpu.* ]]; then
         cat <<EOF >> ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER/kind.yaml
