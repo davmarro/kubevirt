@@ -19,4 +19,4 @@
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KUBEVIRTCI_PATH="${BASE_DIR}/kubevirtci/cluster-up/"
-KUBEVIRTCI_CONFIG_PATH="${BASE_DIR}/kubevirtci/_ci-configs"
+KUBEVIRTCI_CONFIG_PATH="${KUBEVIRTCI_CONFIG_PATH:-${BASE_DIR}/kubevirtci/_ci-configs}"
