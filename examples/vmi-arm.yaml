@@ -7,8 +7,8 @@ metadata:
   name: vmi-arm
 spec:
   domain:
-    cpu:
-      model: "cortex-a57"
+    #cpu:
+      #model: "cortex-a57"
     devices:
       disks:
       - disk:
