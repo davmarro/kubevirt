@@ -29,9 +29,10 @@
 #   kubectl (for interacting with the cluster)
 #
 # USAGE
-#   ./hack/macos-kubevirt-lima-setup.sh [--clean]
+#   ./hack/macos-kubevirt-lima-setup.sh [--clean] [--with-snapshots]
 #
-#   --clean   destroy the Lima VM and recreate from scratch
+#   --clean            destroy the Lima VM and recreate from scratch
+#   --with-snapshots   install CSI snapshot support and enable CBT feature gates
 #
 # The script creates a Lima VM called "kubevirt-vz", runs the kind cluster
 # inside it, deploys KubeVirt, and writes a kubeconfig usable from macOS.
@@ -85,7 +86,7 @@ memory: "${LIMA_VM_MEMORY}"
 disk: "${LIMA_VM_DISK}"
 
 images:
-  - location: "https://dl.fedoraproject.org/pub/fedora/linux/releases/42/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-42-1.1.aarch64.qcow2"
+  - location: "https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-44-1.7.aarch64.qcow2"
     arch: "aarch64"
 
 mounts:
@@ -127,7 +128,13 @@ lima_exec_user() { limactl shell "${LIMA_VM_NAME}" -- bash -c "$*" 2>&1; }
 
 # Check if the VM already exists
 CLEAN_MODE=false
-[[ "${1:-}" == "--clean" ]] && CLEAN_MODE=true
+WITH_SNAPSHOTS=false
+for arg in "$@"; do
+    case "$arg" in
+        --clean) CLEAN_MODE=true ;;
+        --with-snapshots) WITH_SNAPSHOTS=true ;;
+    esac
+done
 
 if limactl list | grep -q "^${LIMA_VM_NAME}"; then
     if $CLEAN_MODE; then
@@ -300,7 +307,66 @@ lima_exec "
     label node ${NODE_NAME} cpu-model.node.kubevirt.io/host-passthrough=true --overwrite || true
 "
 
-# ── 6. Deploy test VMI ────────────────────────────────────────────────────────
+# ── 6. (Optional) Snapshot support + CBT ──────────────────────────────────────
+if $WITH_SNAPSHOTS; then
+    info "Installing VolumeSnapshot CRDs, controller, and CSI hostpath driver…"
+
+    SNAPSHOTTER_VERSION="v8.2.0"
+    lima_exec "
+      kubectl --kubeconfig=${LIMA_KC} apply -f \
+        https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
+      kubectl --kubeconfig=${LIMA_KC} apply -f \
+        https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
+      kubectl --kubeconfig=${LIMA_KC} apply -f \
+        https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
+      kubectl --kubeconfig=${LIMA_KC} apply -f \
+        https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
+      kubectl --kubeconfig=${LIMA_KC} apply -f \
+        https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
+      kubectl --kubeconfig=${LIMA_KC} -n kube-system wait --for=condition=Ready \
+        pod -l app.kubernetes.io/name=snapshot-controller --timeout=120s
+    "
+    success "Snapshot CRDs and controller installed."
+
+    info "Deploying CSI hostpath driver (with snapshot support)…"
+    lima_exec "
+      cd /tmp && rm -rf csi-driver-host-path
+      git clone --depth 1 https://github.com/kubernetes-csi/csi-driver-host-path.git
+      cd csi-driver-host-path
+      export KUBECONFIG=${LIMA_LOCAL_CI_CONFIG}/${KUBEVIRT_PROVIDER}/.kubeconfig
+      deploy/kubernetes-latest/deploy.sh
+    "
+    success "CSI hostpath driver deployed."
+
+    info "Creating StorageClass and configuring StorageProfile…"
+    lima_exec "
+      cat <<SCEOF | kubectl --kubeconfig=${LIMA_KC} apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: csi-hostpath-sc
+provisioner: hostpath.csi.k8s.io
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+SCEOF
+      kubectl --kubeconfig=${LIMA_KC} patch storageprofile csi-hostpath-sc --type=merge \
+        -p '{\"spec\":{\"claimPropertySets\":[{\"accessModes\":[\"ReadWriteOnce\"],\"volumeMode\":\"Filesystem\"}]}}'
+    "
+    success "StorageClass csi-hostpath-sc configured."
+
+    info "Enabling CBT feature gates and label selectors…"
+    lima_exec "
+      kubectl --kubeconfig=${LIMA_KC} patch kubevirt kubevirt -n kubevirt --type=json -p \
+        '[{\"op\":\"replace\",\"path\":\"/spec/configuration/developerConfiguration/featureGates\",\"value\":[\"IncrementalBackup\",\"UtilityVolumes\",\"VMExport\"]}]'
+      kubectl --kubeconfig=${LIMA_KC} patch kubevirt kubevirt -n kubevirt --type=merge -p \
+        '{\"spec\":{\"configuration\":{\"changedBlockTrackingLabelSelectors\":{\"virtualMachineLabelSelector\":{\"matchLabels\":{\"changedBlockTracking\":\"true\"}},\"namespaceLabelSelector\":{\"matchLabels\":{\"changedBlockTracking\":\"true\"}}}}}}'
+      kubectl --kubeconfig=${LIMA_KC} -n kubevirt wait kv kubevirt --for=condition=Available --timeout=120s
+    "
+    success "CBT feature gates enabled. VMs with label changedBlockTracking=true will have CBT."
+fi
+
+# ── 7. Deploy test VMI ────────────────────────────────────────────────────────
 info "Deploying test VMI (examples/vmi-arm.yaml)…"
 lima_exec "kubectl --kubeconfig=${LIMA_KC} apply -f ${LIMA_REPO_PATH}/examples/vmi-arm.yaml"
 
@@ -316,6 +382,10 @@ echo ""
 echo "  Lima VM:    ${LIMA_VM_NAME} (vmType=vz, nestedVirtualization=true)"
 echo "  KVM mode:   Apple VZ native (no coarse-grained nested KVM overhead)"
 echo "  KubeVirt:   release ${KUBEVIRT_VERSION} (vanilla, no modifications needed)"
+if $WITH_SNAPSHOTS; then
+echo "  Snapshots:  CSI hostpath driver + VolumeSnapshotClass installed"
+echo "  CBT:        IncrementalBackup, UtilityVolumes, VMExport feature gates enabled"
+fi
 echo ""
 echo "  Enter Lima shell for kubectl / virtctl:"
 echo "    limactl shell ${LIMA_VM_NAME}"
