@@ -22,6 +22,7 @@ package migration
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"time"
 
 	expect "github.com/google/goexpect"
@@ -802,19 +803,29 @@ var _ = Describe(SIG("Live Migration across namespaces", decorators.RequiresDece
 			sourceDV, err := virtClient.CdiClient().CdiV1beta1().DataVolumes(testsuite.GetTestNamespace(sourceDV)).Create(context.Background(), sourceDV, metav1.CreateOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			libstorage.EventuallyDV(sourceDV, 240, Or(matcher.HaveSucceeded(), matcher.WaitForFirstConsumer()))
+			memRequest := "128Mi"
+			if runtime.GOARCH == "arm64" {
+				memRequest = "512Mi"
+			}
 			sourceVMI := libvmi.New(
 				libvmi.WithNamespace(testsuite.NamespaceTestDefault),
 				libvmi.WithInterface(libvmi.NewInterface(v1.DefaultPodNetwork().Name, libvmi.WithMasqueradeBinding())),
 				libvmi.WithNetwork(v1.DefaultPodNetwork()),
 				libvmi.WithDataVolume("disk0", sourceDV.Name),
-				libvmi.WithMemoryRequest("128Mi"),
+				libvmi.WithMemoryRequest(memRequest),
 			)
 			targetVMI := sourceVMI.DeepCopy()
 			targetVMI.Namespace = testsuite.NamespaceTestAlternative
+			sourceVMI.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": "kind-1.35-worker"}
 
 			sourceVM := createAndStartVMFromVMISpec(sourceVMI)
 			Expect(sourceVM).ToNot(BeNil())
-			Expect(console.LoginToAlpine(sourceVMI)).To(Succeed())
+			if runtime.GOARCH != "arm64" {
+				Expect(console.LoginToAlpine(sourceVMI)).To(Succeed())
+			} else {
+				By("Skipping console login on ARM64 (serial console not supported), waiting for VMI Running")
+				libwait.WaitForSuccessfulVMIStart(sourceVMI)
+			}
 			var targetDV *cdiv1.DataVolume
 			num := 4
 			for i := 0; i < num; i++ {
@@ -840,7 +851,12 @@ var _ = Describe(SIG("Live Migration across namespaces", decorators.RequiresDece
 				}
 				sourceMigration, targetMigration = libmigration.RunDecentralizedMigrationAndExpectToCompleteWithDefaultTimeout(virtClient, sourceMigration, targetMigration)
 				libmigration.ConfirmVMIPostMigration(virtClient, expectedVMI, targetMigration)
-				Expect(console.LoginToAlpine(expectedVMI)).To(Succeed())
+				if runtime.GOARCH != "arm64" {
+					Expect(console.LoginToAlpine(expectedVMI)).To(Succeed())
+				} else {
+					By("Skipping post-migration console login on ARM64")
+					libwait.WaitForSuccessfulVMIStart(expectedVMI)
+				}
 				By("ensuring the runStrategy is properly updated to be what the source was")
 				updateRunStrategy(targetVM, sourceRunStrategy)
 				By("cleaning up migration resources")

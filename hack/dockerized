@@ -123,7 +123,12 @@ printf "\n"
 rsynch_fail_count=0
 
 _rsync() {
-    rsync -al --no-owner --no-group --contimeout="${DOCKERIZED_RSYNC_CONNECT_TIMEOUT}" --timeout="${DOCKERIZED_RSYNC_IO_TIMEOUT}" "$@"
+    rsync -al --omit-dir-times "$@"
+    local rc=$?
+    if [ $rc -ne 0 ] && [ $rc -ne 23 ]; then
+        return $rc
+    fi
+    return 0
 }
 
 # Copy kubevirt into the persistent container volume

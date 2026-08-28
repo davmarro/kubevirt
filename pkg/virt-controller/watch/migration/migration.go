@@ -1185,6 +1185,9 @@ func (c *Controller) getNodeSelectorsFromNodeName(nodeName string) (map[string]s
 				res[key] = value
 			}
 		}
+		if arch, ok := node.Labels[k8sv1.LabelArchStable]; ok {
+			res[k8sv1.LabelArchStable] = arch
+		}
 	}
 	return res, nil
 }
