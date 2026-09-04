@@ -20,8 +20,12 @@
 package domainstats
 
 import (
+	"fmt"
+
 	"github.com/rhobs/operator-observability-toolkit/pkg/operatormetrics"
 	"kubevirt.io/client-go/log"
+
+	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/stats"
 )
 
 var (
@@ -80,6 +84,25 @@ var (
 			Help: "Total time spent on cache flushing.",
 		},
 	)
+
+	storageReadLatencySeconds = operatormetrics.NewGauge(
+		operatormetrics.MetricOpts{
+			Name: "kubevirt_vmi_storage_read_latency_seconds_bucket",
+			Help: "Cumulative read latency histogram bucket for block devices.",
+		},
+	)
+	storageWriteLatencySeconds = operatormetrics.NewGauge(
+		operatormetrics.MetricOpts{
+			Name: "kubevirt_vmi_storage_write_latency_seconds_bucket",
+			Help: "Cumulative write latency histogram bucket for block devices.",
+		},
+	)
+	storageFlushLatencySeconds = operatormetrics.NewGauge(
+		operatormetrics.MetricOpts{
+			Name: "kubevirt_vmi_storage_flush_latency_seconds_bucket",
+			Help: "Cumulative flush latency histogram bucket for block devices.",
+		},
+	)
 )
 
 type blockMetrics struct{}
@@ -94,6 +117,9 @@ func (blockMetrics) Describe() []operatormetrics.Metric {
 		storageWriteTimesSeconds,
 		storageFlushRequests,
 		storageFlushTimesSeconds,
+		storageReadLatencySeconds,
+		storageWriteLatencySeconds,
+		storageFlushLatencySeconds,
 	}
 }
 
@@ -146,7 +172,57 @@ func (blockMetrics) Collect(vmiReport *VirtualMachineInstanceReport) []operatorm
 		if block.FlTimesSet {
 			crs = append(crs, vmiReport.newCollectorResultWithLabels(storageFlushTimesSeconds, nanosecondsToSeconds(block.FlTimes), blkLabels))
 		}
+
+		crs = append(crs, emitLatencyHistogramBuckets(
+			vmiReport, block.LatencyHistograms.Read,
+			storageReadLatencySeconds, blkLabels)...)
+
+		crs = append(crs, emitLatencyHistogramBuckets(
+			vmiReport, block.LatencyHistograms.Write,
+			storageWriteLatencySeconds, blkLabels)...)
+
+		crs = append(crs, emitLatencyHistogramBuckets(
+			vmiReport, block.LatencyHistograms.Flush,
+			storageFlushLatencySeconds, blkLabels)...)
+
 	}
 
+	return crs
+}
+
+func emitLatencyHistogramBuckets(
+	vmiReport *VirtualMachineInstanceReport,
+	histogram *stats.DomainStatsBlockLatencyHistogram,
+	metric operatormetrics.Metric,
+	baseLabels map[string]string,
+) []operatormetrics.CollectorResult {
+	if histogram == nil || len(histogram.Bins) == 0 {
+		return nil
+	}
+	var crs []operatormetrics.CollectorResult
+	var cumulative uint64
+	for _, bin := range histogram.Bins {
+		if !bin.ValueSet {
+			continue
+		}
+		cumulative += bin.Value
+		// Convert nanoseconds → seconds for the "le" label
+		le := fmt.Sprintf("%g", float64(bin.Start)/1e9)
+		labels := make(map[string]string, len(baseLabels)+1)
+		for k, v := range baseLabels {
+			labels[k] = v
+		}
+		labels["le"] = le
+		crs = append(crs, vmiReport.newCollectorResultWithLabels(
+			metric, float64(cumulative), labels))
+	}
+	// +Inf bucket (total count)
+	infLabels := make(map[string]string, len(baseLabels)+1)
+	for k, v := range baseLabels {
+		infLabels[k] = v
+	}
+	infLabels["le"] = "+Inf"
+	crs = append(crs, vmiReport.newCollectorResultWithLabels(
+		metric, float64(cumulative), infLabels))
 	return crs
 }
