@@ -216,7 +216,24 @@ func (d DiskConfigurator) convert_v1_Disk_To_api_Disk(diskDevice *v1.Disk, disk 
 		Name:  "qemu",
 		Cache: string(diskDevice.Cache),
 		IO:    diskDevice.IO,
+		Statistics: &api.DiskDriverStatistics{
+			LatencyHistograms: []api.DiskDriverLatencyHistogram{
+				{
+					Bins: []api.DiskDriverLatencyHistBin{
+						{Start: 0},
+						{Start: 1_000_000},
+						{Start: 10_000_000},
+						{Start: 50_000_000},
+						{Start: 100_000_000},
+						{Start: 500_000_000},
+						{Start: 2_000_000_000},
+						{Start: 4_000_000_000},
+					},
+				},
+			},
+		},
 	}
+
 	if diskDevice.Disk != nil || diskDevice.LUN != nil {
 		if !slices.Contains(d.volumesDiscardIgnore, diskDevice.Name) {
 			disk.Driver.Discard = "unmap"
