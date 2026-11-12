@@ -32,6 +32,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/virtctl/scp"
 	"kubevirt.io/kubevirt/pkg/virtctl/softreboot"
 	"kubevirt.io/kubevirt/pkg/virtctl/ssh"
+	"kubevirt.io/kubevirt/pkg/virtctl/storage"
 	"kubevirt.io/kubevirt/pkg/virtctl/template"
 	"kubevirt.io/kubevirt/pkg/virtctl/templates"
 	"kubevirt.io/kubevirt/pkg/virtctl/unpause"
@@ -135,6 +136,7 @@ func NewVirtctlCommandFn() *cobra.Command {
 		credentials.NewCommand(),
 		adm.NewCommand(),
 		objectgraph.NewCommand(),
+		storage.NewCommand(),
 		template.NewCommand(),
 		optionsCmd,
 	)

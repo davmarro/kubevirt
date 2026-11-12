@@ -24,6 +24,17 @@ import (
 )
 
 var _ = Describe("virtctl", func() {
+	DescribeTable("storage commands are registered", func(args []string) {
+		cmd := virtctl.NewVirtctlCommandFn()
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs(args)
+		Expect(cmd.Execute()).To(Succeed())
+	},
+		Entry("storage help", []string{"storage", "--help"}),
+		Entry("inspect help", []string{"storage", "inspect", "--help"}),
+	)
+
 	DescribeTable("GetProgramName", func(binary, expected string) {
 		Expect(virtctl.GetProgramName(binary)).To(Equal(expected))
 	},
