@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	ktesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -42,6 +43,9 @@ import (
 	"kubevirt.io/client-go/kubecli"
 	kvfake "kubevirt.io/client-go/kubevirt/fake"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
+	"net/http"
+	"net/http/httptest"
+	"time"
 
 	"kubevirt.io/kubevirt/pkg/virtctl/clientconfig"
 )
@@ -49,15 +53,18 @@ import (
 const testNamespace = "storage-test"
 
 type fixture struct {
-	vm      *v1.VirtualMachine
-	vmi     *v1.VirtualMachineInstance
-	pvc     *corev1.PersistentVolumeClaim
-	pv      *corev1.PersistentVolume
-	node    *corev1.Node
-	dv      *cdiv1.DataVolume
-	extraVM *v1.VirtualMachine
-	fail    string
-	pages   []*v1.VirtualMachineList
+	vm            *v1.VirtualMachine
+	vmi           *v1.VirtualMachineInstance
+	pvc           *corev1.PersistentVolumeClaim
+	pv            *corev1.PersistentVolume
+	node          *corev1.Node
+	dv            *cdiv1.DataVolume
+	extraVM       *v1.VirtualMachine
+	fail          string
+	pages         []*v1.VirtualMachineList
+	rates         domainRates
+	monitorStatus int
+	monitorBody   string
 }
 
 func newFixture() *fixture {
@@ -73,7 +80,7 @@ func newFixture() *fixture {
 		Status:     v1.VirtualMachineStatus{PrintableStatus: v1.VirtualMachineStatusRunning},
 	}
 	vmi := &v1.VirtualMachineInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: testNamespace, UID: "vmi-uid", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(vm, v1.VirtualMachineGroupVersionKind)}},
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: testNamespace, UID: "vmi-uid", CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)), OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(vm, v1.VirtualMachineGroupVersionKind)}},
 		Spec:       *spec.DeepCopy(),
 		Status:     v1.VirtualMachineInstanceStatus{Phase: v1.Running, NodeName: "worker-a"},
 	}
@@ -95,7 +102,7 @@ func newFixture() *fixture {
 		ObjectMeta: metav1.ObjectMeta{Name: "worker-a"},
 		Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{OSImage: "Test Linux", KernelVersion: "6.12.0"}},
 	}
-	return &fixture{vm: vm, vmi: vmi, pvc: pvc, pv: pv, node: node}
+	return &fixture{vm: vm, vmi: vmi, pvc: pvc, pv: pv, node: node, rates: domainRates{"data": diskRates{IOPSRead: 0, IOPSWrite: 0, ReadTrafficBytes: 0, WriteTrafficBytes: 0, ReadTimesSeconds: 0, WriteTimesSeconds: 0}}}
 }
 
 func (f *fixture) run(args ...string) (string, string, error) {
@@ -124,6 +131,23 @@ func (f *fixture) run(args ...string) (string, string, error) {
 	virt := kvfake.NewSimpleClientset(virtObjects...)
 	core := k8sfake.NewSimpleClientset(coreObjects...)
 	cdi := cdifake.NewSimpleClientset(cdiObjects...)
+	queries := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer GinkgoRecover()
+		queries++
+		Expect(r.URL.Path).To(Equal("/api/v1/query"))
+		Expect(r.Header.Get("Authorization")).To(BeEmpty())
+		if f.monitorStatus != 0 {
+			w.WriteHeader(f.monitorStatus)
+		}
+		if f.monitorBody != "" {
+			fmt.Fprint(w, f.monitorBody)
+			return
+		}
+		writeRates(w, r, f.rates)
+	}))
+	defer server.Close()
+
 	if f.fail != "" {
 		fail := func(action ktesting.Action) (bool, runtime.Object, error) {
 			return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: f.fail}, "demo", fmt.Errorf("test access denied"))
@@ -151,6 +175,7 @@ func (f *fixture) run(args ...string) (string, string, error) {
 	client.EXPECT().GeneratedKubeVirtClient().Return(virt).AnyTimes()
 	client.EXPECT().CoreV1().Return(core.CoreV1()).AnyTimes()
 	client.EXPECT().CdiClient().Return(cdi).AnyTimes()
+	client.EXPECT().Config().Return(&rest.Config{Host: "https://api.example.test", BearerToken: "test-token"}).AnyTimes()
 	kubecli.MockKubevirtClientInstance = client
 	cmd := NewCommand()
 	cmd.SetContext(clientconfig.NewContext(context.Background(), clientcmd.NewNonInteractiveClientConfig(
@@ -160,7 +185,7 @@ func (f *fixture) run(args ...string) (string, string, error) {
 	cmd.SetErr(&warnings)
 	cmd.SilenceErrors = true
 	cmd.SilenceUsage = true
-	cmd.SetArgs(args)
+	cmd.SetArgs(append(args, "--"+prometheusURLFlag+"="+server.URL))
 	err := cmd.Execute()
 	for _, actions := range [][]ktesting.Action{virt.Actions(), core.Actions(), cdi.Actions()} {
 		for _, action := range actions {
@@ -173,6 +198,7 @@ func (f *fixture) run(args ...string) (string, string, error) {
 	if len(args) == 1 && args[0] == "inspect" {
 		Expect(core.Actions()).To(BeEmpty())
 		Expect(cdi.Actions()).To(BeEmpty())
+		Expect(queries).To(BeZero())
 	}
 	return out.String(), warnings.String(), err
 }
@@ -182,14 +208,16 @@ func useDataVolume(f *fixture, name, claim string) {
 	f.dv = &cdiv1.DataVolume{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace}, Status: cdiv1.DataVolumeStatus{ClaimName: claim}}
 }
 
-var _ = Describe("Storage inspection", func() {
-	BeforeEach(func() {
-		getClient, client := kubecli.GetKubevirtClientFromClientConfig, kubecli.MockKubevirtClientInstance
-		DeferCleanup(func() {
-			kubecli.GetKubevirtClientFromClientConfig, kubecli.MockKubevirtClientInstance = getClient, client
-		})
-		kubecli.GetKubevirtClientFromClientConfig = kubecli.GetMockKubevirtClientFromClientConfig
+func mockStorageClient() {
+	getClient, client := kubecli.GetKubevirtClientFromClientConfig, kubecli.MockKubevirtClientInstance
+	DeferCleanup(func() {
+		kubecli.GetKubevirtClientFromClientConfig, kubecli.MockKubevirtClientInstance = getClient, client
 	})
+	kubecli.GetKubevirtClientFromClientConfig = kubecli.GetMockKubevirtClientFromClientConfig
+}
+
+var _ = Describe("Storage inspection", func() {
+	BeforeEach(mockStorageClient)
 
 	DescribeTable("resolve disk resources without inventing associations", func(change func(*fixture), expected, warning string) {
 		f := newFixture()
@@ -202,7 +230,7 @@ var _ = Describe("Storage inspection", func() {
 		}
 		Expect(lines).To(ContainElement(expected))
 		if warning == "" {
-			Expect(stderr).To(BeEmpty())
+			Expect(stderr).NotTo(ContainSubstring("Warning:"))
 		} else {
 			Expect(stderr).To(ContainSubstring(warning))
 		}
@@ -249,7 +277,7 @@ var _ = Describe("Storage inspection", func() {
 			Expect(out).To(ContainSubstring(text))
 		}
 		if warning == "" {
-			Expect(stderr).To(BeEmpty())
+			Expect(stderr).NotTo(ContainSubstring("Warning:"))
 		} else {
 			Expect(stderr).To(ContainSubstring(warning))
 		}

@@ -55,8 +55,10 @@ const NotReported = "not reported"
 const VolumeMissing = "volume missing"
 
 type storageCommand struct {
-	client    kubecli.KubevirtClient
-	namespace string
+	client        kubecli.KubevirtClient
+	namespace     string
+	prometheusURL string
+	prometheusCA  string
 }
 
 type diskInfo struct {
@@ -80,6 +82,8 @@ func NewCommand() *cobra.Command {
 		RunE: storageCommand.run,
 	}
 	inspect.SetUsageTemplate(templates.UsageTemplate())
+	inspect.Flags().StringVar(&storageCommand.prometheusURL, prometheusURLFlag, "", "Prometheus-compatible base URL (required for Domain metrics).")
+	inspect.Flags().StringVar(&storageCommand.prometheusCA, prometheusCAFlag, "", "CA certificate file for the monitoring endpoint (default: system trust).")
 	cmd.AddCommand(inspect)
 	return cmd
 }
@@ -210,7 +214,10 @@ func (s *storageCommand) inspectVM(cmd *cobra.Command, name string) error {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", row.name, row.source, row.pvc, row.pv, row.driver, row.pvcStatus)
 		}
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	return s.printDomainPerformance(cmd, vmi, rows)
 }
 
 func (s *storageCommand) inspectDisk(cmd *cobra.Command, volume v1.Volume, currentClaim string) diskInfo {
