@@ -43,6 +43,8 @@ const (
 	WriteTrafficBytes        = "write_traffic_bytes_total"
 	ReadTimesSeconds         = "read_times_seconds_total"
 	WriteTimesSeconds        = "write_times_seconds_total"
+	FlushRequests            = "flush_requests_total"
+	FlushTimesSeconds        = "flush_times_seconds_total"
 	kubevirtVmiStoragePrefix = "kubevirt_vmi_storage_"
 	namespaceLabel           = "namespace"
 	nameLabel                = "name"
@@ -55,7 +57,7 @@ const (
 	monitoringTimeout        = 15 * time.Second
 	bytesPerMiB              = 1024 * 1024
 	millisecondsPerSecond    = 1000
-	domainColumnCount        = 6
+	domainColumnCount        = 8
 	metricValueFormat        = "%.2f"
 	noCompletedOperations    = "-"
 )
@@ -86,10 +88,10 @@ func (s *storageCommand) printDomainPerformance(cmd *cobra.Command, vmi *v1.Virt
 	} else {
 		fmt.Fprintln(w, "\nDomain performance (Prometheus): unavailable")
 	}
-	fmt.Fprintln(w, "DISK\tREAD IOPS\tWRITE IOPS\tREAD MiB/s\tWRITE MiB/s\tREAD LATENCY ms\tWRITE LATENCY ms")
+	fmt.Fprintln(w, "DISK\tREAD IOPS\tWRITE IOPS\tREAD MiB/s\tWRITE MiB/s\tREAD LATENCY ms\tWRITE LATENCY ms\tFLUSH OPS/s\tFLUSH LATENCY ms")
 	for _, disk := range disks {
 		values := diskPerformance(rates[disk.name])
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", disk.name, values[0], values[1], values[2], values[3], values[4], values[5])
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", disk.name, values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7])
 	}
 	return w.Flush()
 }
@@ -126,7 +128,7 @@ func (s *storageCommand) queryDomain(ctx context.Context, vmi *v1.VirtualMachine
 		return nil, err
 	}
 	rates := domainRates{}
-	for _, metric := range []string{IOPSRead, IOPSWrite, ReadTrafficBytes, WriteTrafficBytes, ReadTimesSeconds, WriteTimesSeconds} {
+	for _, metric := range []string{IOPSRead, IOPSWrite, ReadTrafficBytes, WriteTrafficBytes, ReadTimesSeconds, WriteTimesSeconds, FlushRequests, FlushTimesSeconds} {
 		result, warnings, err := api.Query(ctx, domainQuery(metric, vmi, window), at)
 		if err != nil {
 			return nil, fmt.Errorf("cannot query %s: %w", kubevirtVmiStoragePrefix+metric, err)
@@ -218,7 +220,7 @@ func addDomainRates(rates domainRates, vector model.Vector, metric string, vmi *
 }
 
 func diskPerformance(rates diskRates) [domainColumnCount]string {
-	values := [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}
+	values := [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}
 	for i, metrics := range [][3]string{{IOPSRead, ReadTrafficBytes, ReadTimesSeconds}, {IOPSWrite, WriteTrafficBytes, WriteTimesSeconds}} {
 		operations, hasOperations := rates[metrics[0]]
 		traffic, hasTraffic := rates[metrics[1]]
@@ -233,6 +235,15 @@ func diskPerformance(rates diskRates) [domainColumnCount]string {
 			values[i+4] = noCompletedOperations
 			if operations > 0 {
 				values[i+4] = fmt.Sprintf(metricValueFormat, seconds/operations*millisecondsPerSecond)
+			}
+		}
+	}
+	if operations, exists := rates[FlushRequests]; exists {
+		values[6] = fmt.Sprintf(metricValueFormat, operations)
+		if seconds, exists := rates[FlushTimesSeconds]; exists {
+			values[7] = noCompletedOperations
+			if operations > 0 {
+				values[7] = fmt.Sprintf(metricValueFormat, seconds/operations*millisecondsPerSecond)
 			}
 		}
 	}

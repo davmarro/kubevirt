@@ -55,7 +55,7 @@ func writeRates(w http.ResponseWriter, r *http.Request, rates domainRates) {
 	Expect(r.ParseForm()).To(Succeed())
 	query := r.Form.Get("query")
 	vector := model.Vector{}
-	for _, metric := range []string{IOPSRead, IOPSWrite, ReadTrafficBytes, WriteTrafficBytes, ReadTimesSeconds, WriteTimesSeconds} {
+	for _, metric := range []string{IOPSRead, IOPSWrite, ReadTrafficBytes, WriteTrafficBytes, ReadTimesSeconds, WriteTimesSeconds, FlushRequests, FlushTimesSeconds} {
 		if !strings.Contains(query, kubevirtVmiStoragePrefix+metric+"{") {
 			continue
 		}
@@ -80,13 +80,17 @@ var _ = Describe("Domain performance from Prometheus", func() {
 	DescribeTable("format per-disk rates and completed-operation latency", func(rates diskRates, expected [domainColumnCount]string) {
 		Expect(diskPerformance(rates)).To(Equal(expected))
 	},
-		Entry("missing rates", diskRates{}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("active reads and writes", diskRates{IOPSRead: 4, IOPSWrite: 2, ReadTrafficBytes: 2 * bytesPerMiB, WriteTrafficBytes: bytesPerMiB, ReadTimesSeconds: .008, WriteTimesSeconds: .01}, [domainColumnCount]string{"4.00", "2.00", "2.00", "1.00", "2.00", "5.00"}),
-		Entry("idle is zero activity and undefined latency", diskRates{IOPSRead: 0, ReadTrafficBytes: 0, ReadTimesSeconds: 0}, [domainColumnCount]string{"0.00", Unavailable, "0.00", Unavailable, noCompletedOperations, Unavailable}),
-		Entry("missing operation rate", diskRates{ReadTimesSeconds: .01}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("missing time rate preserves IOPS", diskRates{IOPSRead: 2}, [domainColumnCount]string{"2.00", Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("missing byte rate does not hide latency", diskRates{IOPSRead: 2, ReadTimesSeconds: .004}, [domainColumnCount]string{"2.00", Unavailable, Unavailable, Unavailable, "2.00", Unavailable}),
-		Entry("nil observation", nil, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing rates", diskRates{}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("active reads and writes", diskRates{IOPSRead: 4, IOPSWrite: 2, ReadTrafficBytes: 2 * bytesPerMiB, WriteTrafficBytes: bytesPerMiB, ReadTimesSeconds: .008, WriteTimesSeconds: .01}, [domainColumnCount]string{"4.00", "2.00", "2.00", "1.00", "2.00", "5.00", Unavailable, Unavailable}),
+		Entry("idle is zero activity and undefined latency", diskRates{IOPSRead: 0, ReadTrafficBytes: 0, ReadTimesSeconds: 0}, [domainColumnCount]string{"0.00", Unavailable, "0.00", Unavailable, noCompletedOperations, Unavailable, Unavailable, Unavailable}),
+		Entry("missing operation rate", diskRates{ReadTimesSeconds: .01}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing time rate preserves IOPS", diskRates{IOPSRead: 2}, [domainColumnCount]string{"2.00", Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing byte rate does not hide latency", diskRates{IOPSRead: 2, ReadTimesSeconds: .004}, [domainColumnCount]string{"2.00", Unavailable, Unavailable, Unavailable, "2.00", Unavailable, Unavailable, Unavailable}),
+		Entry("active flushes", diskRates{FlushRequests: 4, FlushTimesSeconds: .02}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "4.00", "5.00"}),
+		Entry("idle flushes", diskRates{FlushRequests: 0, FlushTimesSeconds: 0}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "0.00", noCompletedOperations}),
+		Entry("missing flush request rate", diskRates{FlushTimesSeconds: .01}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing flush time preserves flush rate", diskRates{FlushRequests: 2}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "2.00", Unavailable}),
+		Entry("nil observation", nil, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
 	)
 
 	DescribeTable("validate rate series and resource identity", func(change func(model.Vector) model.Vector, expected string, present bool) {
@@ -170,7 +174,7 @@ var _ = Describe("Domain performance from Prometheus", func() {
 		}, monitoringWindow),
 	)
 
-	It("queries all six counters at one evaluation time, with rates, identity and freshness filters", func() {
+	It("queries all eight counters at one evaluation time, with rates, identity and freshness filters", func() {
 		at := time.Now().Truncate(time.Second)
 		times := []string{}
 		queries := []string{}
@@ -179,14 +183,14 @@ var _ = Describe("Domain performance from Prometheus", func() {
 			Expect(r.ParseForm()).To(Succeed())
 			queries = append(queries, r.Form.Get("query"))
 			times = append(times, r.Form.Get("time"))
-			writeRates(w, r, domainRates{"data": diskRates{IOPSRead: 4, ReadTimesSeconds: .008}})
+			writeRates(w, r, domainRates{"data": diskRates{IOPSRead: 4, ReadTimesSeconds: .008, FlushRequests: 2, FlushTimesSeconds: .01}})
 		}))
 		defer server.Close()
 		rates, err := monitoringCommand(server.URL).queryDomain(context.Background(), newFixture().vmi, at, monitoringWindow)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(rates["data"]).To(Equal(diskRates{IOPSRead: 4, ReadTimesSeconds: .008}))
-		Expect(queries).To(HaveLen(6))
-		Expect(times).To(HaveLen(6))
+		Expect(rates["data"]).To(Equal(diskRates{IOPSRead: 4, ReadTimesSeconds: .008, FlushRequests: 2, FlushTimesSeconds: .01}))
+		Expect(queries).To(HaveLen(8))
+		Expect(times).To(HaveLen(8))
 		for i, q := range queries {
 			Expect(q).To(HavePrefix("rate(kubevirt_vmi_storage_"))
 			Expect(q).To(ContainSubstring(`namespace="storage-test",name="demo",node="worker-a",drive!=""`))
@@ -198,19 +202,19 @@ var _ = Describe("Domain performance from Prometheus", func() {
 
 	DescribeTable("use disk aliases without guessing guest device associations", func(drive string, matched bool) {
 		f := newFixture()
-		f.rates = domainRates{drive: diskRates{IOPSRead: 10, ReadTimesSeconds: .02}}
+		f.rates = domainRates{drive: diskRates{IOPSRead: 10, ReadTimesSeconds: .02, FlushRequests: 2, FlushTimesSeconds: .01}}
 		out, stderr, err := f.run("inspect", "demo")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(stderr).To(BeEmpty())
 		Expect(out).To(ContainSubstring("Domain performance (Prometheus, lookback 5m0s, evaluated at"))
 		lines := strings.Split(out, "\n")
 		fields := strings.Fields(lines[len(lines)-2])
-		Expect(fields).To(HaveLen(7))
+		Expect(fields).To(HaveLen(9))
 		Expect(fields[0]).To(Equal("data"))
 		if matched {
-			Expect(fields[1:]).To(Equal([]string{"10.00", Unavailable, Unavailable, Unavailable, "2.00", Unavailable}))
+			Expect(fields[1:]).To(Equal([]string{"10.00", Unavailable, Unavailable, Unavailable, "2.00", Unavailable, "2.00", "5.00"}))
 		} else {
-			Expect(fields[1:]).To(Equal([]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}))
+			Expect(fields[1:]).To(Equal([]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}))
 		}
 	}, Entry("VMI disk alias", "data", true), Entry("unmapped target name", "vdb", false))
 

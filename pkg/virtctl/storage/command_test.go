@@ -102,7 +102,7 @@ func newFixture() *fixture {
 		ObjectMeta: metav1.ObjectMeta{Name: "worker-a"},
 		Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{OSImage: "Test Linux", KernelVersion: "6.12.0"}},
 	}
-	return &fixture{vm: vm, vmi: vmi, pvc: pvc, pv: pv, node: node, rates: domainRates{"data": diskRates{IOPSRead: 0, IOPSWrite: 0, ReadTrafficBytes: 0, WriteTrafficBytes: 0, ReadTimesSeconds: 0, WriteTimesSeconds: 0}}}
+	return &fixture{vm: vm, vmi: vmi, pvc: pvc, pv: pv, node: node, rates: domainRates{"data": diskRates{IOPSRead: 0, IOPSWrite: 0, ReadTrafficBytes: 0, WriteTrafficBytes: 0, ReadTimesSeconds: 0, WriteTimesSeconds: 0, FlushRequests: 0, FlushTimesSeconds: 0}}}
 }
 
 func (f *fixture) run(args ...string) (string, string, error) {
