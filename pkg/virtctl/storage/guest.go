@@ -22,16 +22,15 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"math"
 	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/prometheus/common/model"
 	"github.com/spf13/cobra"
 	v1 "kubevirt.io/api/core/v1"
+	"kubevirt.io/client-go/kubecli"
 )
 
 const (
@@ -42,17 +41,22 @@ const (
 	bytesPerGiB        = 1024 * 1024 * 1024
 )
 
+type guestLevel struct {
+	source *prometheusSource
+	client kubecli.KubevirtClient
+}
+
 type guestFilesystem struct {
 	device, mount, capacity, used string
 }
 
-func (s *storageCommand) printGuestFilesystems(cmd *cobra.Command, vmi *v1.VirtualMachineInstance) error {
-	if vmi == nil || !vmi.IsRunning() || vmi.Status.NodeName == "" {
+func (g guestLevel) print(cmd *cobra.Command, vmi *v1.VirtualMachineInstance) error {
+	if !vmiRunningOnNode(vmi) {
 		cmd.Println("\nGuest filesystems: unavailable (VMI is not running on a node).")
 		return nil
 	}
 	at := time.Now()
-	filesystems, err := s.queryGuest(cmd.Context(), vmi, at)
+	filesystems, err := g.query(cmd.Context(), vmi, at)
 	if err != nil {
 		if cmd.Context().Err() != nil {
 			return cmd.Context().Err()
@@ -63,7 +67,7 @@ func (s *storageCommand) printGuestFilesystems(cmd *cobra.Command, vmi *v1.Virtu
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), monitoringTimeout)
 	defer cancel()
-	info, err := s.client.VirtualMachineInstance(vmi.Namespace).FilesystemList(ctx, vmi.Name)
+	info, err := g.client.VirtualMachineInstance(vmi.Namespace).FilesystemList(ctx, vmi.Name)
 	if err != nil {
 		if cmd.Context().Err() != nil {
 			return cmd.Context().Err()
@@ -95,40 +99,28 @@ VM DISK: "-" means the association is unavailable.`)
 	return w.Flush()
 }
 
-func (s *storageCommand) queryGuest(ctx context.Context, vmi *v1.VirtualMachineInstance, at time.Time) (map[string]guestFilesystem, error) {
-	if state := vmi.Status.MigrationState; state != nil && !state.Completed {
-		return nil, fmt.Errorf("VMI migration is in progress; retry after completion")
+func (g guestLevel) query(ctx context.Context, vmi *v1.VirtualMachineInstance, at time.Time) (map[string]guestFilesystem, error) {
+	if err := checkMetricMigration(vmi); err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, monitoringTimeout)
 	defer cancel()
-	api, err := s.monitoringAPI()
-	if err != nil {
-		return nil, err
-	}
 	rows := map[string]guestFilesystem{}
-	cutoff := at.Add(-min(monitoringMaxAge, domainWindow(vmi, at))).Unix()
+	cutoff := at.Add(-min(monitoringMaxAge, vmiMetricsWindow(vmi, at))).Unix()
 	for _, metric := range []string{FilesystemCapacity, FilesystemUsed} {
-		selector := fmt.Sprintf("%s{namespace=%q,name=%q,node=%q}", metric, vmi.Namespace, vmi.Name, vmi.Status.NodeName)
+		selector := fmt.Sprintf("%s{%s}", metric, vmiMetricSelector(vmi))
 		query := fmt.Sprintf("%s and (timestamp(%s) >= %d)", selector, selector, cutoff)
-		result, warnings, err := api.Query(ctx, query, at)
+		vector, err := g.source.queryVector(ctx, metric, query, at)
 		if err != nil {
-			return nil, fmt.Errorf("cannot query %s: %w", metric, err)
-		}
-		if len(warnings) > 0 {
-			return nil, fmt.Errorf("incomplete monitoring result for %s: %v", metric, warnings)
-		}
-		vector, ok := result.(model.Vector)
-		if !ok {
-			return nil, fmt.Errorf("unexpected monitoring result for %s: expected an instant vector", metric)
+			return nil, err
 		}
 		for _, sample := range vector {
 			labels := sample.Metric
 			device, mount := string(labels[guestDeviceLabel]), string(labels[guestMountLabel])
-			if labels[namespaceLabel] != model.LabelValue(vmi.Namespace) || labels[nameLabel] != model.LabelValue(vmi.Name) || labels[nodeLabel] != model.LabelValue(vmi.Status.NodeName) || mount == "" {
+			if !matchesVMI(labels, vmi) || mount == "" {
 				continue
 			}
-			value := float64(sample.Value)
-			if sample.Histogram != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+			if !validMetricSample(sample) {
 				return nil, fmt.Errorf("invalid filesystem value %s for mount %s", metric, mount)
 			}
 			key := fmt.Sprintf("%q:%q", device, mount)
@@ -143,7 +135,7 @@ func (s *storageCommand) queryGuest(ctx context.Context, vmi *v1.VirtualMachineI
 			if *field != Unavailable {
 				return nil, fmt.Errorf("ambiguous filesystem value %s for mount %s", metric, mount)
 			}
-			*field = fmt.Sprintf(metricValueFormat, value/bytesPerGiB)
+			*field = fmt.Sprintf(metricValueFormat, float64(sample.Value)/bytesPerGiB)
 			rows[key] = row
 		}
 	}

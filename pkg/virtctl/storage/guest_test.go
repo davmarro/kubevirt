@@ -79,7 +79,8 @@ var _ = Describe("Guest filesystem metrics", func() {
 			writeFilesystems(w, r, filesystems)
 		}))
 		defer server.Close()
-		rows, err := monitoringCommand(server.URL).queryGuest(context.Background(), newFixture().vmi, time.Now())
+		level := guestLevel{source: testPrometheusSource(server.URL)}
+		rows, err := level.query(context.Background(), newFixture().vmi, time.Now())
 		if expectedError != "" {
 			Expect(err).To(MatchError(ContainSubstring(expectedError)))
 		} else {
@@ -158,7 +159,8 @@ var _ = Describe("Guest filesystem metrics", func() {
 			writeFilesystems(w, r, testFilesystems())
 		}))
 		defer server.Close()
-		_, err := monitoringCommand(server.URL).queryGuest(context.Background(), vmi, at)
+		level := guestLevel{source: testPrometheusSource(server.URL)}
+		_, err := level.query(context.Background(), vmi, at)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(queries).To(HaveLen(2))
 		Expect(times).To(HaveLen(2))
@@ -321,7 +323,8 @@ var _ = Describe("Guest filesystem metrics", func() {
 		cmd.SetContext(ctx)
 		cmd.SetOut(&bytes.Buffer{})
 		cmd.SetErr(&bytes.Buffer{})
-		err := monitoringCommand(server.URL).printGuestFilesystems(cmd, newFixture().vmi)
+		level := guestLevel{source: testPrometheusSource(server.URL)}
+		err := level.print(cmd, newFixture().vmi)
 		Expect(err).To(MatchError(context.Canceled))
 	}, Entry("before query", true), Entry("during query", false))
 })

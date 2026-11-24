@@ -21,13 +21,9 @@ package storage
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"encoding/pem"
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,20 +31,12 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/prometheus/common/model"
 	"github.com/spf13/cobra"
-	"go.uber.org/mock/gomock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/rest"
 	v1 "kubevirt.io/api/core/v1"
-	"kubevirt.io/client-go/kubecli"
 )
 
 func rateSample(drive string, value float64) *model.Sample {
 	return &model.Sample{Metric: model.Metric{namespaceLabel: testNamespace, nameLabel: "demo", nodeLabel: "worker-a", driveLabel: model.LabelValue(drive)}, Value: model.SampleValue(value), Timestamp: model.Now()}
-}
-
-func writeVector(w http.ResponseWriter, vector model.Vector) {
-	w.Header().Set("Content-Type", "application/json")
-	Expect(json.NewEncoder(w).Encode(map[string]interface{}{"status": "success", "data": map[string]interface{}{"resultType": "vector", "result": vector}})).To(Succeed())
 }
 
 func writeRates(w http.ResponseWriter, r *http.Request, rates domainRates) {
@@ -68,29 +56,23 @@ func writeRates(w http.ResponseWriter, r *http.Request, rates domainRates) {
 	writeVector(w, vector)
 }
 
-func monitoringCommand(endpoint string) *storageCommand {
-	client := kubecli.NewMockKubevirtClient(gomock.NewController(GinkgoT()))
-	client.EXPECT().Config().Return(&rest.Config{Host: "https://api.example.test", BearerToken: "test-token"}).AnyTimes()
-	return &storageCommand{client: client, prometheusURL: endpoint}
-}
-
 var _ = Describe("Domain performance from Prometheus", func() {
 	BeforeEach(mockStorageClient)
 
-	DescribeTable("format per-disk rates and completed-operation latency", func(rates diskRates, expected [domainColumnCount]string) {
+	DescribeTable("format per-disk rates and completed-operation latency", func(rates diskRates, expected []string) {
 		Expect(diskPerformance(rates)).To(Equal(expected))
 	},
-		Entry("missing rates", diskRates{}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("active reads and writes", diskRates{IOPSRead: 4, IOPSWrite: 2, ReadTrafficBytes: 2 * bytesPerMiB, WriteTrafficBytes: bytesPerMiB, ReadTimesSeconds: .008, WriteTimesSeconds: .01}, [domainColumnCount]string{"4.00", "2.00", "2.00", "1.00", "2.00", "5.00", Unavailable, Unavailable}),
-		Entry("idle is zero activity and undefined latency", diskRates{IOPSRead: 0, ReadTrafficBytes: 0, ReadTimesSeconds: 0}, [domainColumnCount]string{"0.00", Unavailable, "0.00", Unavailable, noCompletedOperations, Unavailable, Unavailable, Unavailable}),
-		Entry("missing operation rate", diskRates{ReadTimesSeconds: .01}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("missing time rate preserves IOPS", diskRates{IOPSRead: 2}, [domainColumnCount]string{"2.00", Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("missing byte rate does not hide latency", diskRates{IOPSRead: 2, ReadTimesSeconds: .004}, [domainColumnCount]string{"2.00", Unavailable, Unavailable, Unavailable, "2.00", Unavailable, Unavailable, Unavailable}),
-		Entry("active flushes", diskRates{FlushRequests: 4, FlushTimesSeconds: .02}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "4.00", "5.00"}),
-		Entry("idle flushes", diskRates{FlushRequests: 0, FlushTimesSeconds: 0}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "0.00", noCompletedOperations}),
-		Entry("missing flush request rate", diskRates{FlushTimesSeconds: .01}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("missing flush time preserves flush rate", diskRates{FlushRequests: 2}, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "2.00", Unavailable}),
-		Entry("nil observation", nil, [domainColumnCount]string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing rates", diskRates{}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("active reads and writes", diskRates{IOPSRead: 4, IOPSWrite: 2, ReadTrafficBytes: 2 * bytesPerMiB, WriteTrafficBytes: bytesPerMiB, ReadTimesSeconds: .008, WriteTimesSeconds: .01}, []string{"4.00", "2.00", "2.00", "1.00", "2.00", "5.00", Unavailable, Unavailable}),
+		Entry("idle is zero activity and undefined latency", diskRates{IOPSRead: 0, ReadTrafficBytes: 0, ReadTimesSeconds: 0}, []string{"0.00", Unavailable, "0.00", Unavailable, noCompletedOperations, Unavailable, Unavailable, Unavailable}),
+		Entry("missing operation rate", diskRates{ReadTimesSeconds: .01}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing time rate preserves IOPS", diskRates{IOPSRead: 2}, []string{"2.00", Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing byte rate does not hide latency", diskRates{IOPSRead: 2, ReadTimesSeconds: .004}, []string{"2.00", Unavailable, Unavailable, Unavailable, "2.00", Unavailable, Unavailable, Unavailable}),
+		Entry("active flushes", diskRates{FlushRequests: 4, FlushTimesSeconds: .02}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "4.00", "5.00"}),
+		Entry("idle flushes", diskRates{FlushRequests: 0, FlushTimesSeconds: 0}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "0.00", noCompletedOperations}),
+		Entry("missing flush request rate", diskRates{FlushTimesSeconds: .01}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing flush time preserves flush rate", diskRates{FlushRequests: 2}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "2.00", Unavailable}),
+		Entry("nil observation", nil, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
 	)
 
 	DescribeTable("validate rate series and resource identity", func(change func(model.Vector) model.Vector, expected string, present bool) {
@@ -155,7 +137,7 @@ var _ = Describe("Domain performance from Prometheus", func() {
 		vmi := newFixture().vmi
 		vmi.CreationTimestamp = metav1.NewTime(at.Add(-time.Hour))
 		change(vmi, at)
-		Expect(domainWindow(vmi, at)).To(Equal(expected))
+		Expect(vmiMetricsWindow(vmi, at)).To(Equal(expected))
 	},
 		Entry("existing VMI", func(*v1.VirtualMachineInstance, time.Time) {}, monitoringWindow),
 		Entry("recently recreated VMI", func(v *v1.VirtualMachineInstance, t time.Time) {
@@ -186,7 +168,8 @@ var _ = Describe("Domain performance from Prometheus", func() {
 			writeRates(w, r, domainRates{"data": diskRates{IOPSRead: 4, ReadTimesSeconds: .008, FlushRequests: 2, FlushTimesSeconds: .01}})
 		}))
 		defer server.Close()
-		rates, err := monitoringCommand(server.URL).queryDomain(context.Background(), newFixture().vmi, at, monitoringWindow)
+		level := domainLevel{source: testPrometheusSource(server.URL)}
+		rates, err := level.query(context.Background(), newFixture().vmi, at, monitoringWindow)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rates["data"]).To(Equal(diskRates{IOPSRead: 4, ReadTimesSeconds: .008, FlushRequests: 2, FlushTimesSeconds: .01}))
 		Expect(queries).To(HaveLen(8))
@@ -218,77 +201,18 @@ var _ = Describe("Domain performance from Prometheus", func() {
 		}
 	}, Entry("VMI disk alias", "data", true), Entry("unmapped target name", "vdb", false))
 
-	DescribeTable("validate monitoring base URLs", func(endpoint, expected string) {
-		api, err := monitoringCommand(endpoint).monitoringAPI()
-		if expected == "" {
-			Expect(err).NotTo(HaveOccurred())
-			Expect(api).NotTo(BeNil())
-		} else {
-			Expect(err).To(MatchError(ContainSubstring(expected)))
-		}
-	},
-		Entry("explicit HTTPS endpoint", "https://monitor.example.test", ""),
-		Entry("explicit loopback endpoint", "http://127.0.0.1:19091", ""),
-		Entry("missing URL", "", "--prometheus-url is required to read monitoring metrics"),
-		Entry("missing scheme", "monitor.example.test", "must be an HTTP(S) base URL"),
-		Entry("unsupported scheme", "ftp://monitor.example.test", "must be an HTTP(S) base URL"),
-		Entry("embedded credentials", "https://user:secret@monitor.example.test", "must be an HTTP(S) base URL"),
-		Entry("query parameters", "https://monitor.example.test?token=secret", "must be an HTTP(S) base URL"),
-		Entry("fragment", "https://monitor.example.test/#fragment", "must be an HTTP(S) base URL"),
-		Entry("non-loopback HTTP", "http://monitor.example.test", "only on loopback"),
-	)
-
-	DescribeTable("use monitoring TLS trust and bearer authentication", func(trusted bool) {
-		received := []string{}
-		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			defer GinkgoRecover()
-			received = append(received, r.Header.Get("Authorization"))
-			writeVector(w, model.Vector{})
-		}))
-		defer server.Close()
-		command := monitoringCommand(server.URL)
-		if trusted {
-			ca := filepath.Join(GinkgoT().TempDir(), "monitoring-ca.pem")
-			Expect(os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600)).To(Succeed())
-			command.prometheusCA = ca
-		}
-		api, err := command.monitoringAPI()
-		Expect(err).NotTo(HaveOccurred())
-		_, _, err = api.Query(context.Background(), "up", time.Now())
-		if trusted {
-			Expect(err).NotTo(HaveOccurred())
-			Expect(received).To(Equal([]string{"Bearer test-token"}))
-		} else {
-			Expect(err).To(HaveOccurred())
-			Expect(received).To(BeEmpty())
-		}
-	}, Entry("trusted monitoring certificate", true), Entry("untrusted monitoring certificate", false))
-
-	It("does not follow a redirect to another endpoint", func() {
-		calls := 0
-		destination := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
-		defer destination.Close()
-		source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, destination.URL, http.StatusFound) }))
-		defer source.Close()
-		api, err := monitoringCommand(source.URL).monitoringAPI()
-		Expect(err).NotTo(HaveOccurred())
-		_, _, err = api.Query(context.Background(), "up", time.Now())
-		Expect(err).To(HaveOccurred())
-		Expect(calls).To(BeZero())
-	})
-
 	It("propagates cancellation without hiding the resource report", func() {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { Fail("a cancelled request must not reach monitoring") }))
 		defer server.Close()
-		command := monitoringCommand(server.URL)
+		level := domainLevel{source: testPrometheusSource(server.URL)}
 		cmd := &cobra.Command{}
 		var output bytes.Buffer
 		cmd.SetOut(&output)
 		cmd.SetErr(&bytes.Buffer{})
 		cmd.SetContext(ctx)
-		Expect(command.printDomainPerformance(cmd, newFixture().vmi, []diskInfo{{name: "data"}})).To(MatchError(context.Canceled))
+		Expect(level.print(cmd, newFixture().vmi, []diskInfo{{name: "data"}})).To(MatchError(context.Canceled))
 	})
 
 	It("exposes the monitoring URL and CA flags", func() {

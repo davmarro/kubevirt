@@ -217,10 +217,13 @@ func (s *storageCommand) inspectVM(cmd *cobra.Command, name string) error {
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	if err := s.printDomainPerformance(cmd, vmi, rows); err != nil {
+	source := newPrometheusSource(s.prometheusURL, s.prometheusCA, s.client.Config)
+	domain := domainLevel{source: source}
+	guest := guestLevel{source: source, client: s.client}
+	if err := domain.print(cmd, vmi, rows); err != nil {
 		return err
 	}
-	return s.printGuestFilesystems(cmd, vmi)
+	return guest.print(cmd, vmi)
 }
 
 func (s *storageCommand) inspectDisk(cmd *cobra.Command, volume v1.Volume, currentClaim string) diskInfo {

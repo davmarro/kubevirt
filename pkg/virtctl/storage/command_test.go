@@ -35,7 +35,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
-	"k8s.io/client-go/rest"
 	ktesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -186,7 +185,7 @@ func (f *fixture) run(args ...string) (string, string, error) {
 	vmiClient.EXPECT().FilesystemList(gomock.Any(), "demo").Return(f.filesystemInfo, f.filesystemError).AnyTimes()
 	client.EXPECT().CoreV1().Return(core.CoreV1()).AnyTimes()
 	client.EXPECT().CdiClient().Return(cdi).AnyTimes()
-	client.EXPECT().Config().Return(&rest.Config{Host: "https://api.example.test", BearerToken: "test-token"}).AnyTimes()
+	client.EXPECT().Config().Return(testMonitoringConfig()).MaxTimes(1)
 	kubecli.MockKubevirtClientInstance = client
 	cmd := NewCommand()
 	cmd.SetContext(clientconfig.NewContext(context.Background(), clientcmd.NewNonInteractiveClientConfig(

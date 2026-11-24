@@ -4,8 +4,10 @@ go_library(
     name = "go_default_library",
     srcs = [
         "command.go",
+        "domain.go",
         "guest.go",
         "metrics.go",
+        "prometheus.go",
     ],
     importpath = "kubevirt.io/kubevirt/pkg/virtctl/storage",
     visibility = ["//visibility:public"],
@@ -28,8 +30,9 @@ go_test(
     name = "go_default_test",
     srcs = [
         "command_test.go",
+        "domain_test.go",
         "guest_test.go",
-        "metrics_test.go",
+        "prometheus_test.go",
         "storage_suite_test.go",
     ],
     embed = [":go_default_library"],
