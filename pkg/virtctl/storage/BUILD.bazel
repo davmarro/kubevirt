@@ -4,6 +4,7 @@ go_library(
     name = "go_default_library",
     srcs = [
         "command.go",
+        "csi.go",
         "domain.go",
         "guest.go",
         "metrics.go",
@@ -22,6 +23,7 @@ go_library(
         "//vendor/github.com/spf13/cobra:go_default_library",
         "//vendor/k8s.io/apimachinery/pkg/api/errors:go_default_library",
         "//vendor/k8s.io/apimachinery/pkg/apis/meta/v1:go_default_library",
+        "//vendor/k8s.io/client-go/kubernetes/typed/storage/v1:go_default_library",
         "//vendor/k8s.io/client-go/rest:go_default_library",
     ],
 )
@@ -30,6 +32,7 @@ go_test(
     name = "go_default_test",
     srcs = [
         "command_test.go",
+        "csi_test.go",
         "domain_test.go",
         "guest_test.go",
         "prometheus_test.go",
@@ -50,6 +53,7 @@ go_test(
         "//vendor/github.com/spf13/cobra:go_default_library",
         "//vendor/go.uber.org/mock/gomock:go_default_library",
         "//vendor/k8s.io/api/core/v1:go_default_library",
+        "//vendor/k8s.io/api/storage/v1:go_default_library",
         "//vendor/k8s.io/apimachinery/pkg/api/errors:go_default_library",
         "//vendor/k8s.io/apimachinery/pkg/apis/meta/v1:go_default_library",
         "//vendor/k8s.io/apimachinery/pkg/runtime:go_default_library",

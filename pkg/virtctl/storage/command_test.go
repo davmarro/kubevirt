@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/mock/gomock"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -68,6 +69,8 @@ type fixture struct {
 	filesystems     map[string]model.Vector
 	filesystemInfo  v1.VirtualMachineInstanceFileSystemList
 	filesystemError error
+	attachments     []*storagev1.VolumeAttachment
+	attachmentLists int
 }
 
 func newFixture() *fixture {
@@ -132,6 +135,9 @@ func (f *fixture) run(args ...string) (string, string, error) {
 		cdiObjects = append(cdiObjects, f.dv)
 	}
 	virt := kvfake.NewSimpleClientset(virtObjects...)
+	for _, attachment := range f.attachments {
+		coreObjects = append(coreObjects, attachment)
+	}
 	core := k8sfake.NewSimpleClientset(coreObjects...)
 	cdi := cdifake.NewSimpleClientset(cdiObjects...)
 	queries := 0
@@ -184,6 +190,7 @@ func (f *fixture) run(args ...string) (string, string, error) {
 	client.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiClient).AnyTimes()
 	vmiClient.EXPECT().FilesystemList(gomock.Any(), "demo").Return(f.filesystemInfo, f.filesystemError).AnyTimes()
 	client.EXPECT().CoreV1().Return(core.CoreV1()).AnyTimes()
+	client.EXPECT().StorageV1().Return(core.StorageV1()).AnyTimes()
 	client.EXPECT().CdiClient().Return(cdi).AnyTimes()
 	client.EXPECT().Config().Return(testMonitoringConfig()).MaxTimes(1)
 	kubecli.MockKubevirtClientInstance = client
@@ -197,6 +204,14 @@ func (f *fixture) run(args ...string) (string, string, error) {
 	cmd.SilenceUsage = true
 	cmd.SetArgs(append(args, "--"+prometheusURLFlag+"="+server.URL))
 	err := cmd.Execute()
+	f.attachmentLists = 0
+	for _, action := range core.Actions() {
+		if action.GetResource().Resource == "volumeattachments" {
+			Expect(action.GetVerb()).To(Equal("list"))
+			Expect(action.GetNamespace()).To(BeEmpty())
+			f.attachmentLists++
+		}
+	}
 	for _, actions := range [][]ktesting.Action{virt.Actions(), core.Actions(), cdi.Actions()} {
 		for _, action := range actions {
 			Expect(action.GetVerb()).To(BeElementOf("get", "list"))
@@ -211,6 +226,14 @@ func (f *fixture) run(args ...string) (string, string, error) {
 		Expect(queries).To(BeZero())
 	}
 	return out.String(), warnings.String(), err
+}
+
+func normalizedReportLines(report string) []string {
+	lines := strings.Split(report, "\n")
+	for i, line := range lines {
+		lines[i] = strings.Join(strings.Fields(line), " ")
+	}
+	return lines
 }
 
 func useDataVolume(f *fixture, name, claim string) {
@@ -234,48 +257,44 @@ var _ = Describe("Storage inspection", func() {
 		change(f)
 		out, stderr, err := f.run("inspect", "demo")
 		Expect(err).NotTo(HaveOccurred())
-		var lines []string
-		for _, line := range strings.Split(out, "\n") {
-			lines = append(lines, strings.Join(strings.Fields(line), " "))
-		}
-		Expect(lines).To(ContainElement(expected))
+		Expect(normalizedReportLines(out)).To(ContainElement(expected))
 		if warning == "" {
 			Expect(stderr).NotTo(ContainSubstring("Warning:"))
 		} else {
 			Expect(stderr).To(ContainSubstring(warning))
 		}
 	},
-		Entry("bound CSI PVC", func(*fixture) {}, "data PVC claim-a pv-a example.csi.test Bound", ""),
-		Entry("unbound PVC", func(f *fixture) { f.pvc.Spec.VolumeName = ""; f.pvc.Status.Phase = corev1.ClaimPending }, "data PVC claim-a - - Pending", ""),
-		Entry("non-CSI PV", func(f *fixture) { f.pv.Spec.CSI = nil }, "data PVC claim-a pv-a not CSI Bound", ""),
-		Entry("missing PVC", func(f *fixture) { f.pvc = nil }, "data PVC claim-a - - unavailable", "cannot read PVC"),
-		Entry("missing PV", func(f *fixture) { f.pv = nil }, "data PVC claim-a pv-a unavailable Bound", "cannot read PV"),
-		Entry("mismatched PV claim reference", func(f *fixture) { f.pv.Spec.ClaimRef.UID = "another-claim" }, "data PVC claim-a pv-a unresolved Bound", "claim reference does not match"),
-		Entry("DataVolume with a different claim name", func(f *fixture) { useDataVolume(f, "import-a", "claim-a") }, "data DataVolume claim-a pv-a example.csi.test Bound", ""),
-		Entry("DataVolume default claim name", func(f *fixture) { useDataVolume(f, "claim-a", "") }, "data DataVolume claim-a pv-a example.csi.test Bound", ""),
-		Entry("missing DataVolume", func(f *fixture) { useDataVolume(f, "import-a", ""); f.dv = nil }, "data DataVolume - - - unresolved", "cannot resolve DataVolume"),
+		Entry("bound CSI PVC", func(*fixture) {}, "data PVC claim-a pv-a example.csi.test Bound unavailable", ""),
+		Entry("unbound PVC", func(f *fixture) { f.pvc.Spec.VolumeName = ""; f.pvc.Status.Phase = corev1.ClaimPending }, "data PVC claim-a - - Pending unavailable", ""),
+		Entry("non-CSI PV", func(f *fixture) { f.pv.Spec.CSI = nil }, "data PVC claim-a pv-a not CSI Bound not applicable", ""),
+		Entry("missing PVC", func(f *fixture) { f.pvc = nil }, "data PVC claim-a - - unavailable unavailable", "cannot read PVC"),
+		Entry("missing PV", func(f *fixture) { f.pv = nil }, "data PVC claim-a pv-a unavailable Bound unavailable", "cannot read PV"),
+		Entry("mismatched PV claim reference", func(f *fixture) { f.pv.Spec.ClaimRef.UID = "another-claim" }, "data PVC claim-a pv-a unresolved Bound unavailable", "claim reference does not match"),
+		Entry("DataVolume with a different claim name", func(f *fixture) { useDataVolume(f, "import-a", "claim-a") }, "data DataVolume claim-a pv-a example.csi.test Bound unavailable", ""),
+		Entry("DataVolume default claim name", func(f *fixture) { useDataVolume(f, "claim-a", "") }, "data DataVolume claim-a pv-a example.csi.test Bound unavailable", ""),
+		Entry("missing DataVolume", func(f *fixture) { useDataVolume(f, "import-a", ""); f.dv = nil }, "data DataVolume - - - unresolved unavailable", "cannot resolve DataVolume"),
 		Entry("current claim from VMI status", func(f *fixture) {
 			f.vmi.Spec.Volumes[0].PersistentVolumeClaim.ClaimName = "old-claim"
 			f.vmi.Status.VolumeStatus = []v1.VolumeStatus{{Name: "data", PersistentVolumeClaimInfo: &v1.PersistentVolumeClaimInfo{ClaimName: "claim-a"}}}
-		}, "data PVC claim-a pv-a example.csi.test Bound", ""),
+		}, "data PVC claim-a pv-a example.csi.test Bound unavailable", ""),
 		Entry("DataVolume removed after population", func(f *fixture) {
 			useDataVolume(f, "import-a", "")
 			f.dv = nil
 			f.vmi.Status.VolumeStatus = []v1.VolumeStatus{{Name: "data", PersistentVolumeClaimInfo: &v1.PersistentVolumeClaimInfo{ClaimName: "claim-a"}}}
-		}, "data DataVolume claim-a pv-a example.csi.test Bound", ""),
+		}, "data DataVolume claim-a pv-a example.csi.test Bound unavailable", ""),
 		Entry("ephemeral PVC backing", func(f *fixture) {
 			f.vmi.Spec.Volumes[0].VolumeSource = v1.VolumeSource{Ephemeral: &v1.EphemeralVolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "claim-a"}}}
-		}, "data ephemeral PVC claim-a pv-a example.csi.test Bound", ""),
+		}, "data ephemeral PVC claim-a pv-a example.csi.test Bound unavailable", ""),
 		Entry("container disk", func(f *fixture) {
 			f.vmi.Spec.Volumes[0].VolumeSource = v1.VolumeSource{ContainerDisk: &v1.ContainerDiskSource{Image: "example/disk"}}
-		}, "data containerDisk - - - not applicable", ""),
+		}, "data containerDisk - - - not applicable not applicable", ""),
 		Entry("cloud-init disk", func(f *fixture) {
 			f.vmi.Spec.Volumes[0].VolumeSource = v1.VolumeSource{CloudInitNoCloud: &v1.CloudInitNoCloudSource{UserData: "test"}}
-		}, "data cloud-init - - - not applicable", ""),
-		Entry("disk without a matching volume", func(f *fixture) { f.vmi.Spec.Volumes = nil }, "data volume missing - - - unresolved", ""),
-		Entry("denied PVC access", func(f *fixture) { f.fail = "persistentvolumeclaims" }, "data PVC claim-a - - unavailable", "forbidden"),
-		Entry("denied PV access", func(f *fixture) { f.fail = "persistentvolumes" }, "data PVC claim-a pv-a unavailable Bound", "forbidden"),
-		Entry("denied DataVolume access", func(f *fixture) { useDataVolume(f, "import-a", "claim-a"); f.fail = "datavolumes" }, "data DataVolume - - - unresolved", "forbidden"),
+		}, "data cloud-init - - - not applicable not applicable", ""),
+		Entry("disk without a matching volume", func(f *fixture) { f.vmi.Spec.Volumes = nil }, "data volume missing - - - unresolved unavailable", ""),
+		Entry("denied PVC access", func(f *fixture) { f.fail = "persistentvolumeclaims" }, "data PVC claim-a - - unavailable unavailable", "forbidden"),
+		Entry("denied PV access", func(f *fixture) { f.fail = "persistentvolumes" }, "data PVC claim-a pv-a unavailable Bound unavailable", "forbidden"),
+		Entry("denied DataVolume access", func(f *fixture) { useDataVolume(f, "import-a", "claim-a"); f.fail = "datavolumes" }, "data DataVolume - - - unresolved unavailable", "forbidden"),
 	)
 
 	DescribeTable("show the source of VM and node context", func(change func(*fixture), expected []string, warning string) {

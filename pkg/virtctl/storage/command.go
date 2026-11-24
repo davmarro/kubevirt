@@ -62,7 +62,8 @@ type storageCommand struct {
 }
 
 type diskInfo struct {
-	name, source, pvc, pv, driver, pvcStatus string
+	name, source, pvc, pv, driver, pvcStatus, attachment string
+	hasCSIDriver                                         bool
 }
 
 // NewCommand creates the storage inspection commands.
@@ -197,11 +198,13 @@ func (s *storageCommand) inspectVM(cmd *cobra.Command, name string) error {
 	for _, disk := range spec.Domain.Devices.Disks {
 		volume, found := volumes[disk.Name]
 		if !found {
-			rows = append(rows, diskInfo{disk.Name, VolumeMissing, "-", "-", "-", Unresolved})
+			rows = append(rows, diskInfo{name: disk.Name, source: VolumeMissing, pvc: "-", pv: "-", driver: "-", pvcStatus: Unresolved, attachment: Unavailable})
 			continue
 		}
 		rows = append(rows, s.inspectDisk(cmd, volume, claims[disk.Name]))
 	}
+	csi := csiLevel{client: s.client.StorageV1()}
+	csi.readAttachments(cmd, vmi, rows)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
@@ -209,9 +212,9 @@ func (s *storageCommand) inspectVM(cmd *cobra.Command, name string) error {
 	if len(rows) == 0 {
 		fmt.Fprintln(w, "No disks configured.")
 	} else {
-		fmt.Fprintln(w, "DISK\tSOURCE\tPVC\tPV\tCSI DRIVER\tPVC STATUS")
+		fmt.Fprintln(w, "DISK\tSOURCE\tPVC\tPV\tCSI DRIVER\tPVC STATUS\tCSI ATTACHMENT")
 		for _, row := range rows {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", row.name, row.source, row.pvc, row.pv, row.driver, row.pvcStatus)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", row.name, row.source, row.pvc, row.pv, row.driver, row.pvcStatus, row.attachment)
 		}
 	}
 	if err := w.Flush(); err != nil {
@@ -227,7 +230,7 @@ func (s *storageCommand) inspectVM(cmd *cobra.Command, name string) error {
 }
 
 func (s *storageCommand) inspectDisk(cmd *cobra.Command, volume v1.Volume, currentClaim string) diskInfo {
-	row := diskInfo{name: volume.Name, source: "non-PVC", pvc: "-", pv: "-", driver: "-", pvcStatus: NotApplicable}
+	row := diskInfo{name: volume.Name, source: "non-PVC", pvc: "-", pv: "-", driver: "-", pvcStatus: NotApplicable, attachment: Unavailable}
 	var claimName string
 	switch {
 	case volume.PersistentVolumeClaim != nil:
@@ -255,6 +258,7 @@ func (s *storageCommand) inspectDisk(cmd *cobra.Command, volume v1.Volume, curre
 		row.source = HostDisk
 	}
 	if row.source != PVC && row.source != DataVolume && row.source != EphemeralPVC {
+		row.attachment = NotApplicable
 		return row
 	}
 	// The VMI status records the current claim, including after volume migration.
@@ -286,9 +290,11 @@ func (s *storageCommand) inspectDisk(cmd *cobra.Command, volume v1.Volume, curre
 		cmd.PrintErrf("Warning: PV %s claim reference does not match PVC %s/%s\n", row.pv, s.namespace, pvc.Name)
 		return row
 	}
-	row.driver = NotCSI
-	if pv.Spec.CSI != nil {
-		row.driver = present(pv.Spec.CSI.Driver, "not reported")
+	if pv.Spec.CSI == nil {
+		row.driver, row.attachment = NotCSI, NotApplicable
+	} else {
+		row.driver = present(pv.Spec.CSI.Driver, NotReported)
+		row.hasCSIDriver = pv.Spec.CSI.Driver != ""
 	}
 	return row
 }
