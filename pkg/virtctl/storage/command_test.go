@@ -26,6 +26,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/common/model"
 	"github.com/spf13/cobra"
 	"go.uber.org/mock/gomock"
 	corev1 "k8s.io/api/core/v1"
@@ -53,23 +54,26 @@ import (
 const testNamespace = "storage-test"
 
 type fixture struct {
-	vm            *v1.VirtualMachine
-	vmi           *v1.VirtualMachineInstance
-	pvc           *corev1.PersistentVolumeClaim
-	pv            *corev1.PersistentVolume
-	node          *corev1.Node
-	dv            *cdiv1.DataVolume
-	extraVM       *v1.VirtualMachine
-	fail          string
-	pages         []*v1.VirtualMachineList
-	rates         domainRates
-	monitorStatus int
-	monitorBody   string
+	vm              *v1.VirtualMachine
+	vmi             *v1.VirtualMachineInstance
+	pvc             *corev1.PersistentVolumeClaim
+	pv              *corev1.PersistentVolume
+	node            *corev1.Node
+	dv              *cdiv1.DataVolume
+	extraVM         *v1.VirtualMachine
+	fail            string
+	pages           []*v1.VirtualMachineList
+	rates           domainRates
+	monitorStatus   int
+	monitorBody     string
+	filesystems     map[string]model.Vector
+	filesystemInfo  v1.VirtualMachineInstanceFileSystemList
+	filesystemError error
 }
 
 func newFixture() *fixture {
 	spec := v1.VirtualMachineInstanceSpec{
-		Domain: v1.DomainSpec{Devices: v1.Devices{Disks: []v1.Disk{{Name: "data"}}}},
+		Domain: v1.DomainSpec{Devices: v1.Devices{Disks: []v1.Disk{{Name: "data", Serial: "serial-data"}}}},
 		Volumes: []v1.Volume{{Name: "data", VolumeSource: v1.VolumeSource{PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{
 			PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{ClaimName: "claim-a"},
 		}}}},
@@ -102,7 +106,7 @@ func newFixture() *fixture {
 		ObjectMeta: metav1.ObjectMeta{Name: "worker-a"},
 		Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{OSImage: "Test Linux", KernelVersion: "6.12.0"}},
 	}
-	return &fixture{vm: vm, vmi: vmi, pvc: pvc, pv: pv, node: node, rates: domainRates{"data": diskRates{IOPSRead: 0, IOPSWrite: 0, ReadTrafficBytes: 0, WriteTrafficBytes: 0, ReadTimesSeconds: 0, WriteTimesSeconds: 0, FlushRequests: 0, FlushTimesSeconds: 0}}}
+	return &fixture{vm: vm, vmi: vmi, pvc: pvc, pv: pv, node: node, filesystems: testFilesystems(), filesystemInfo: testFilesystemInfo(), rates: domainRates{"data": diskRates{IOPSRead: 0, IOPSWrite: 0, ReadTrafficBytes: 0, WriteTrafficBytes: 0, ReadTimesSeconds: 0, WriteTimesSeconds: 0, FlushRequests: 0, FlushTimesSeconds: 0}}}
 }
 
 func (f *fixture) run(args ...string) (string, string, error) {
@@ -144,6 +148,10 @@ func (f *fixture) run(args ...string) (string, string, error) {
 			fmt.Fprint(w, f.monitorBody)
 			return
 		}
+		if strings.Contains(r.FormValue("query"), "kubevirt_vmi_filesystem_") {
+			writeFilesystems(w, r, f.filesystems)
+			return
+		}
 		writeRates(w, r, f.rates)
 	}))
 	defer server.Close()
@@ -173,6 +181,9 @@ func (f *fixture) run(args ...string) (string, string, error) {
 	}
 	client := kubecli.NewMockKubevirtClient(gomock.NewController(GinkgoT()))
 	client.EXPECT().GeneratedKubeVirtClient().Return(virt).AnyTimes()
+	vmiClient := kubecli.NewMockVirtualMachineInstanceInterface(gomock.NewController(GinkgoT()))
+	client.EXPECT().VirtualMachineInstance(testNamespace).Return(vmiClient).AnyTimes()
+	vmiClient.EXPECT().FilesystemList(gomock.Any(), "demo").Return(f.filesystemInfo, f.filesystemError).AnyTimes()
 	client.EXPECT().CoreV1().Return(core.CoreV1()).AnyTimes()
 	client.EXPECT().CdiClient().Return(cdi).AnyTimes()
 	client.EXPECT().Config().Return(&rest.Config{Host: "https://api.example.test", BearerToken: "test-token"}).AnyTimes()

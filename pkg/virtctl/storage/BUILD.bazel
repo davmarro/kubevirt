@@ -4,6 +4,7 @@ go_library(
     name = "go_default_library",
     srcs = [
         "command.go",
+        "guest.go",
         "metrics.go",
     ],
     importpath = "kubevirt.io/kubevirt/pkg/virtctl/storage",
@@ -27,6 +28,7 @@ go_test(
     name = "go_default_test",
     srcs = [
         "command_test.go",
+        "guest_test.go",
         "metrics_test.go",
         "storage_suite_test.go",
     ],

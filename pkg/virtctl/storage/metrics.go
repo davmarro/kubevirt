@@ -160,7 +160,7 @@ func domainQuery(metric string, vmi *v1.VirtualMachineInstance, window time.Dura
 func (s *storageCommand) monitoringAPI() (promv1.API, error) {
 	endpoint := s.prometheusURL
 	if endpoint == "" {
-		return nil, fmt.Errorf("--%s is required to read Domain metrics", prometheusURLFlag)
+		return nil, fmt.Errorf("--%s is required to read monitoring metrics", prometheusURLFlag)
 	}
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {

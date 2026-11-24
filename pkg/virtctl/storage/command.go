@@ -217,7 +217,10 @@ func (s *storageCommand) inspectVM(cmd *cobra.Command, name string) error {
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	return s.printDomainPerformance(cmd, vmi, rows)
+	if err := s.printDomainPerformance(cmd, vmi, rows); err != nil {
+		return err
+	}
+	return s.printGuestFilesystems(cmd, vmi)
 }
 
 func (s *storageCommand) inspectDisk(cmd *cobra.Command, volume v1.Volume, currentClaim string) diskInfo {

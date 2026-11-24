@@ -207,7 +207,7 @@ var _ = Describe("Domain performance from Prometheus", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(stderr).To(BeEmpty())
 		Expect(out).To(ContainSubstring("Domain performance (Prometheus, lookback 5m0s, evaluated at"))
-		lines := strings.Split(out, "\n")
+		lines := strings.Split(strings.SplitN(out, "\nGuest filesystems", 2)[0], "\n")
 		fields := strings.Fields(lines[len(lines)-2])
 		Expect(fields).To(HaveLen(9))
 		Expect(fields[0]).To(Equal("data"))
@@ -229,7 +229,7 @@ var _ = Describe("Domain performance from Prometheus", func() {
 	},
 		Entry("explicit HTTPS endpoint", "https://monitor.example.test", ""),
 		Entry("explicit loopback endpoint", "http://127.0.0.1:19091", ""),
-		Entry("missing URL", "", "--prometheus-url is required to read Domain metrics"),
+		Entry("missing URL", "", "--prometheus-url is required to read monitoring metrics"),
 		Entry("missing scheme", "monitor.example.test", "must be an HTTP(S) base URL"),
 		Entry("unsupported scheme", "ftp://monitor.example.test", "must be an HTTP(S) base URL"),
 		Entry("embedded credentials", "https://user:secret@monitor.example.test", "must be an HTTP(S) base URL"),
