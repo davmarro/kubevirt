@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	v1 "kubevirt.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
 
@@ -64,6 +65,7 @@ type storageCommand struct {
 type diskInfo struct {
 	name, source, pvc, pv, driver, pvcStatus, attachment string
 	hasCSIDriver                                         bool
+	pvcUID                                               types.UID
 }
 
 // NewCommand creates the storage inspection commands.
@@ -203,7 +205,7 @@ func (s *storageCommand) inspectVM(cmd *cobra.Command, name string) error {
 		}
 		rows = append(rows, s.inspectDisk(cmd, volume, claims[disk.Name]))
 	}
-	csi := csiLevel{client: s.client.StorageV1()}
+	csi := csiLevel{client: s.client.StorageV1(), events: s.client.CoreV1().Events(s.namespace)}
 	csi.readAttachments(cmd, vmi, rows)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].name < rows[j].name })
 
@@ -218,6 +220,9 @@ func (s *storageCommand) inspectVM(cmd *cobra.Command, name string) error {
 		}
 	}
 	if err := w.Flush(); err != nil {
+		return err
+	}
+	if err := csi.printVolumeWarnings(cmd, rows); err != nil {
 		return err
 	}
 	source := newPrometheusSource(s.prometheusURL, s.prometheusCA, s.client.Config)
@@ -274,6 +279,7 @@ func (s *storageCommand) inspectDisk(cmd *cobra.Command, volume v1.Volume, curre
 		cmd.PrintErrf("Warning: cannot read PVC %s/%s: %v\n", s.namespace, claimName, err)
 		return row
 	}
+	row.pvcUID = pvc.UID
 	row.pvcStatus = present(string(pvc.Status.Phase), Unknown)
 	if pvc.Spec.VolumeName == "" {
 		return row

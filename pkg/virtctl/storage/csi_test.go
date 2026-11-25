@@ -19,8 +19,12 @@
 package storage
 
 import (
+	"strings"
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "kubevirt.io/api/core/v1"
@@ -113,5 +117,106 @@ var _ = Describe("CSI attachment status", func() {
 		Entry("unscheduled VMI skips the lookup", func(f *fixture, _ *storagev1.VolumeAttachment) {
 			f.vmi.Status.NodeName = ""
 		}, "example.csi.test Bound unavailable", "", 0),
+	)
+})
+
+var _ = Describe("PVC warnings", func() {
+	BeforeEach(mockStorageClient)
+
+	DescribeTable("shows only the latest warning for each resolved PVC",
+		func(change func(*fixture, *corev1.Event, *corev1.Event), expected []string, lists int, stderrWarning string) {
+			f := newFixture()
+			at := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+			older := &corev1.Event{
+				ObjectMeta: metav1.ObjectMeta{Name: "z-older", Namespace: testNamespace, CreationTimestamp: metav1.NewTime(at)},
+				InvolvedObject: corev1.ObjectReference{
+					Kind: "PersistentVolumeClaim", Namespace: f.pvc.Namespace, Name: f.pvc.Name, UID: f.pvc.UID,
+				},
+				Type: corev1.EventTypeWarning, Reason: "ProvisioningFailed", Message: "earlier error",
+				LastTimestamp: metav1.NewTime(at),
+			}
+			newer := older.DeepCopy()
+			newer.Name = "a-newer"
+			newer.Message = "last error\nretrying"
+			newer.LastTimestamp = metav1.NewTime(at.Add(time.Minute))
+			f.coreExtras = append(f.coreExtras, older, newer)
+			if change != nil {
+				change(f, older, newer)
+			}
+
+			out, stderr, err := f.run("inspect", "demo")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(ContainSubstring("DISK"))
+			Expect(f.eventLists).To(Equal(lists))
+			_, section, found := strings.Cut(out, "Volume warnings:\n")
+			if len(expected) == 0 {
+				Expect(found).To(BeFalse())
+			} else {
+				Expect(found).To(BeTrue())
+				warnings, _, _ := strings.Cut(section, "\n\n")
+				Expect(normalizedReportLines(warnings)).To(Equal(append([]string{"PVC REASON MESSAGE"}, expected...)))
+			}
+			if stderrWarning == "" {
+				Expect(stderr).To(BeEmpty())
+			} else {
+				Expect(stderr).To(ContainSubstring(stderrWarning))
+			}
+		},
+		Entry("orders warnings by their last occurrence", nil,
+			[]string{`claim-a ProvisioningFailed "last error\nretrying"`}, 1, ""),
+		Entry("uses the last observation of a repeated event", func(_ *fixture, older, newer *corev1.Event) {
+			older.Series = &corev1.EventSeries{LastObservedTime: metav1.NewMicroTime(newer.LastTimestamp.Add(time.Minute))}
+		}, []string{`claim-a ProvisioningFailed "earlier error"`}, 1, ""),
+		Entry("uses the observation time of a singleton event", func(_ *fixture, older, newer *corev1.Event) {
+			older.EventTime = metav1.NewMicroTime(newer.LastTimestamp.Add(time.Minute))
+			older.LastTimestamp = metav1.Time{}
+		}, []string{`claim-a ProvisioningFailed "earlier error"`}, 1, ""),
+		Entry("uses the first observation of a legacy event without a last timestamp", func(_ *fixture, older, newer *corev1.Event) {
+			older.FirstTimestamp = metav1.NewTime(newer.LastTimestamp.Add(time.Minute))
+			older.LastTimestamp = metav1.Time{}
+		}, []string{`claim-a ProvisioningFailed "earlier error"`}, 1, ""),
+		Entry("falls back to creation time when observation times are absent", func(_ *fixture, older, newer *corev1.Event) {
+			older.CreationTimestamp = metav1.NewTime(newer.LastTimestamp.Add(time.Minute))
+			older.LastTimestamp = metav1.Time{}
+		}, []string{`claim-a ProvisioningFailed "earlier error"`}, 1, ""),
+		Entry("skips events for an earlier PVC of the same name", func(_ *fixture, older, newer *corev1.Event) {
+			older.InvolvedObject.UID, newer.InvolvedObject.UID = "old-claim-uid", "old-claim-uid"
+		}, nil, 1, ""),
+		Entry("skips normal events and unrelated resource kinds", func(_ *fixture, older, newer *corev1.Event) {
+			older.Type = corev1.EventTypeNormal
+			newer.InvolvedObject.Kind = "Pod"
+		}, nil, 1, ""),
+		Entry("omits the section when no warnings exist", func(f *fixture, _, _ *corev1.Event) {
+			f.coreExtras = nil
+		}, nil, 1, ""),
+		Entry("shows a provisioning warning for an unbound PVC of a stopped VM", func(f *fixture, _, _ *corev1.Event) {
+			f.vmi = nil
+			f.pvc.Spec.VolumeName = ""
+			f.pvc.Status.Phase = corev1.ClaimPending
+		}, []string{`claim-a ProvisioningFailed "last error\nretrying"`}, 1, ""),
+		Entry("deduplicates disks backed by the same claim", func(f *fixture, _, _ *corev1.Event) {
+			volume := f.vmi.Spec.Volumes[0]
+			volume.Name = "other-disk"
+			f.vmi.Spec.Volumes = append(f.vmi.Spec.Volumes, volume)
+			f.vmi.Spec.Domain.Devices.Disks = append(f.vmi.Spec.Domain.Devices.Disks, v1.Disk{Name: volume.Name})
+		}, []string{`claim-a ProvisioningFailed "last error\nretrying"`}, 1, ""),
+		Entry("shows a warning for each affected claim with one API call", func(f *fixture, _, newer *corev1.Event) {
+			other := f.pvc.DeepCopy()
+			other.Name, other.UID, other.Spec.VolumeName = "claim-b", "other-uid", ""
+			event := newer.DeepCopy()
+			event.Name, event.Message = "other-event", "other error"
+			event.InvolvedObject.Name, event.InvolvedObject.UID = other.Name, other.UID
+			f.coreExtras = append(f.coreExtras, other, event)
+			volume := f.vmi.Spec.Volumes[0].DeepCopy()
+			volume.Name, volume.PersistentVolumeClaim.ClaimName = "other-disk", other.Name
+			f.vmi.Spec.Volumes = append(f.vmi.Spec.Volumes, *volume)
+			f.vmi.Spec.Domain.Devices.Disks = append(f.vmi.Spec.Domain.Devices.Disks, v1.Disk{Name: volume.Name})
+		}, []string{`claim-a ProvisioningFailed "last error\nretrying"`, `claim-b ProvisioningFailed "other error"`}, 1, ""),
+		Entry("skips the lookup without a resolved claim", func(f *fixture, _, _ *corev1.Event) {
+			f.pvc = nil
+		}, nil, 0, "cannot read PVC"),
+		Entry("preserves the report when listing events is forbidden", func(f *fixture, _, _ *corev1.Event) {
+			f.fail = "events"
+		}, nil, 1, "cannot list PVC events"),
 	)
 })

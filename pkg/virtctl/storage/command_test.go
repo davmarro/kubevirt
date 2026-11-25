@@ -71,6 +71,8 @@ type fixture struct {
 	filesystemError error
 	attachments     []*storagev1.VolumeAttachment
 	attachmentLists int
+	coreExtras      []runtime.Object
+	eventLists      int
 }
 
 func newFixture() *fixture {
@@ -138,7 +140,7 @@ func (f *fixture) run(args ...string) (string, string, error) {
 	for _, attachment := range f.attachments {
 		coreObjects = append(coreObjects, attachment)
 	}
-	core := k8sfake.NewSimpleClientset(coreObjects...)
+	core := k8sfake.NewSimpleClientset(append(coreObjects, f.coreExtras...)...)
 	cdi := cdifake.NewSimpleClientset(cdiObjects...)
 	queries := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -204,12 +206,17 @@ func (f *fixture) run(args ...string) (string, string, error) {
 	cmd.SilenceUsage = true
 	cmd.SetArgs(append(args, "--"+prometheusURLFlag+"="+server.URL))
 	err := cmd.Execute()
-	f.attachmentLists = 0
+	f.attachmentLists, f.eventLists = 0, 0
 	for _, action := range core.Actions() {
-		if action.GetResource().Resource == "volumeattachments" {
+		switch action.GetResource().Resource {
+		case "volumeattachments":
 			Expect(action.GetVerb()).To(Equal("list"))
 			Expect(action.GetNamespace()).To(BeEmpty())
 			f.attachmentLists++
+		case "events":
+			Expect(action.GetVerb()).To(Equal("list"))
+			Expect(action.GetNamespace()).To(Equal(testNamespace))
+			f.eventLists++
 		}
 	}
 	for _, actions := range [][]ktesting.Action{virt.Actions(), core.Actions(), cdi.Actions()} {
