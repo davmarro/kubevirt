@@ -76,7 +76,7 @@ func (d domainLevel) print(cmd *cobra.Command, vmi *v1.VirtualMachineInstance, d
 	} else {
 		fmt.Fprintln(w, "\nDomain performance (Prometheus): unavailable")
 	}
-	fmt.Fprintln(w, "DISK\tREAD IOPS\tWRITE IOPS\tREAD MiB/s\tWRITE MiB/s\tREAD LATENCY ms\tWRITE LATENCY ms\tFLUSH OPS/s\tFLUSH LATENCY ms")
+	fmt.Fprintln(w, "DISK\tREAD IOPS\tWRITE IOPS\tTOTAL IOPS\tREAD MiB/s\tWRITE MiB/s\tREAD LATENCY ms\tWRITE LATENCY ms\tTOTAL LATENCY ms\tFLUSH OPS/s\tFLUSH LATENCY ms")
 	for _, disk := range disks {
 		values := diskPerformance(rates[disk.name])
 		fmt.Fprintf(w, "%s\t%s\n", disk.name, strings.Join(values, "\t"))
@@ -137,35 +137,44 @@ func addDomainRates(rates domainRates, vector model.Vector, metric string, vmi *
 }
 
 func diskPerformance(rates diskRates) []string {
-	values := []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}
-	for i, metrics := range []struct{ operations, traffic, time string }{
-		{IOPSRead, ReadTrafficBytes, ReadTimesSeconds},
-		{IOPSWrite, WriteTrafficBytes, WriteTimesSeconds},
-	} {
-		operations, hasOperations := rates[metrics.operations]
-		traffic, hasTraffic := rates[metrics.traffic]
-		seconds, hasSeconds := rates[metrics.time]
-		if hasOperations {
-			values[i] = fmt.Sprintf(metricValueFormat, operations)
-		}
-		if hasTraffic {
-			values[i+2] = fmt.Sprintf(metricValueFormat, traffic/bytesPerMiB)
-		}
-		if hasOperations && hasSeconds {
-			values[i+4] = noCompletedOperations
-			if operations > 0 {
-				values[i+4] = fmt.Sprintf(metricValueFormat, seconds/operations*millisecondsPerSecond)
-			}
-		}
+	readOps, hasReadOps := rates[IOPSRead]
+	writeOps, hasWriteOps := rates[IOPSWrite]
+	readBytes, hasReadBytes := rates[ReadTrafficBytes]
+	writeBytes, hasWriteBytes := rates[WriteTrafficBytes]
+	readSeconds, hasReadSeconds := rates[ReadTimesSeconds]
+	writeSeconds, hasWriteSeconds := rates[WriteTimesSeconds]
+	flushOps, hasFlushOps := rates[FlushRequests]
+	flushSeconds, hasFlushSeconds := rates[FlushTimesSeconds]
+
+	totalOps, hasTotalOps := readOps+writeOps, hasReadOps && hasWriteOps
+	return []string{
+		formatDomainRate(readOps, hasReadOps),
+		formatDomainRate(writeOps, hasWriteOps),
+		formatDomainRate(totalOps, hasTotalOps),
+		formatDomainRate(readBytes/bytesPerMiB, hasReadBytes),
+		formatDomainRate(writeBytes/bytesPerMiB, hasWriteBytes),
+		formatDomainLatency(readOps, readSeconds, hasReadOps && hasReadSeconds),
+		formatDomainLatency(writeOps, writeSeconds, hasWriteOps && hasWriteSeconds),
+		formatDomainLatency(totalOps, readSeconds+writeSeconds, hasTotalOps && hasReadSeconds && hasWriteSeconds),
+		formatDomainRate(flushOps, hasFlushOps),
+		formatDomainLatency(flushOps, flushSeconds, hasFlushOps && hasFlushSeconds),
 	}
-	if operations, exists := rates[FlushRequests]; exists {
-		values[6] = fmt.Sprintf(metricValueFormat, operations)
-		if seconds, exists := rates[FlushTimesSeconds]; exists {
-			values[7] = noCompletedOperations
-			if operations > 0 {
-				values[7] = fmt.Sprintf(metricValueFormat, seconds/operations*millisecondsPerSecond)
-			}
-		}
+}
+
+func formatDomainRate(rate float64, available bool) string {
+	if !available {
+		return Unavailable
 	}
-	return values
+	return fmt.Sprintf(metricValueFormat, rate)
+}
+
+func formatDomainLatency(operations, seconds float64, available bool) string {
+	switch {
+	case !available:
+		return Unavailable
+	case operations <= 0:
+		return noCompletedOperations
+	default:
+		return fmt.Sprintf(metricValueFormat, seconds/operations*millisecondsPerSecond)
+	}
 }
