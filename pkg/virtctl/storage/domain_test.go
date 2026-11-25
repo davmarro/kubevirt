@@ -62,20 +62,22 @@ var _ = Describe("Domain performance from Prometheus", func() {
 	DescribeTable("format per-disk rates and completed-operation latency", func(rates diskRates, expected []string) {
 		Expect(diskPerformance(rates)).To(Equal(expected))
 	},
-		Entry("missing rates", diskRates{}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("active reads and writes", diskRates{IOPSRead: 4, IOPSWrite: 2, ReadTrafficBytes: 2 * bytesPerMiB, WriteTrafficBytes: bytesPerMiB, ReadTimesSeconds: .008, WriteTimesSeconds: .01}, []string{"4.00", "2.00", "6.00", "2.00", "1.00", "2.00", "5.00", "3.00", Unavailable, Unavailable}),
-		Entry("idle is zero activity and undefined latency", diskRates{IOPSRead: 0, ReadTrafficBytes: 0, ReadTimesSeconds: 0}, []string{"0.00", Unavailable, Unavailable, "0.00", Unavailable, noCompletedOperations, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("missing operation rate", diskRates{ReadTimesSeconds: .01}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("missing time rate preserves IOPS", diskRates{IOPSRead: 2}, []string{"2.00", Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("missing byte rate does not hide latency", diskRates{IOPSRead: 2, ReadTimesSeconds: .004}, []string{"2.00", Unavailable, Unavailable, Unavailable, Unavailable, "2.00", Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("active flushes", diskRates{FlushRequests: 4, FlushTimesSeconds: .02}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "4.00", "5.00"}),
-		Entry("idle flushes", diskRates{FlushRequests: 0, FlushTimesSeconds: 0}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "0.00", noCompletedOperations}),
-		Entry("missing flush request rate", diskRates{FlushTimesSeconds: .01}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("missing flush time preserves flush rate", diskRates{FlushRequests: 2}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "2.00", Unavailable}),
-		Entry("nil observation", nil, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
-		Entry("idle read and write counters show zero total IOPS and undefined latency", diskRates{IOPSRead: 0, IOPSWrite: 0, ReadTimesSeconds: 0, WriteTimesSeconds: 0}, []string{"0.00", "0.00", "0.00", Unavailable, Unavailable, noCompletedOperations, noCompletedOperations, noCompletedOperations, Unavailable, Unavailable}),
-		Entry("an idle direction and active flushes do not change the read and write totals", diskRates{IOPSRead: 0, IOPSWrite: 4, ReadTimesSeconds: 0, WriteTimesSeconds: .012, FlushRequests: 2, FlushTimesSeconds: .01}, []string{"0.00", "4.00", "4.00", Unavailable, Unavailable, noCompletedOperations, "3.00", "3.00", "2.00", "5.00"}),
-		Entry("missing write time preserves total IOPS but not total latency", diskRates{IOPSRead: 4, IOPSWrite: 2, ReadTimesSeconds: .008}, []string{"4.00", "2.00", "6.00", Unavailable, Unavailable, "2.00", Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing rates", diskRates{}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("active reads and writes", diskRates{IOPSRead: 4, IOPSWrite: 2, ReadTrafficBytes: 2 * bytesPerMiB, WriteTrafficBytes: bytesPerMiB, ReadTimesSeconds: .008, WriteTimesSeconds: .01}, []string{"4.00", "2.00", "6.00", "2.00", "1.00", "512.00", "512.00", "2.00", "5.00", "3.00", Unavailable, Unavailable}),
+		Entry("average request size uses the rates of each direction", diskRates{IOPSRead: 2, IOPSWrite: 4, ReadTrafficBytes: 5 * bytesPerKiB, WriteTrafficBytes: 48 * bytesPerKiB}, []string{"2.00", "4.00", "6.00", "0.00", "0.05", "2.50", "12.00", Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("idle is zero activity and undefined latency", diskRates{IOPSRead: 0, ReadTrafficBytes: 0, ReadTimesSeconds: 0}, []string{"0.00", Unavailable, Unavailable, "0.00", Unavailable, noCompletedOperations, Unavailable, noCompletedOperations, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing operation rate", diskRates{ReadTimesSeconds: .01}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing operation rate preserves throughput", diskRates{ReadTrafficBytes: bytesPerMiB}, []string{Unavailable, Unavailable, Unavailable, "1.00", Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing time rate preserves IOPS", diskRates{IOPSRead: 2}, []string{"2.00", Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing byte rate does not hide latency", diskRates{IOPSRead: 2, ReadTimesSeconds: .004}, []string{"2.00", Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "2.00", Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("active flushes", diskRates{FlushRequests: 4, FlushTimesSeconds: .02}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "4.00", "5.00"}),
+		Entry("idle flushes", diskRates{FlushRequests: 0, FlushTimesSeconds: 0}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "0.00", noCompletedOperations}),
+		Entry("missing flush request rate", diskRates{FlushTimesSeconds: .01}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("missing flush time preserves flush rate", diskRates{FlushRequests: 2}, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "2.00", Unavailable}),
+		Entry("nil observation", nil, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("idle read and write counters show zero total IOPS and undefined latency", diskRates{IOPSRead: 0, IOPSWrite: 0, ReadTimesSeconds: 0, WriteTimesSeconds: 0}, []string{"0.00", "0.00", "0.00", Unavailable, Unavailable, Unavailable, Unavailable, noCompletedOperations, noCompletedOperations, noCompletedOperations, Unavailable, Unavailable}),
+		Entry("an idle direction and active flushes do not change the read and write totals", diskRates{IOPSRead: 0, IOPSWrite: 4, ReadTimesSeconds: 0, WriteTimesSeconds: .012, FlushRequests: 2, FlushTimesSeconds: .01}, []string{"0.00", "4.00", "4.00", Unavailable, Unavailable, Unavailable, Unavailable, noCompletedOperations, "3.00", "3.00", "2.00", "5.00"}),
+		Entry("missing write time preserves total IOPS but not total latency", diskRates{IOPSRead: 4, IOPSWrite: 2, ReadTimesSeconds: .008}, []string{"4.00", "2.00", "6.00", Unavailable, Unavailable, Unavailable, Unavailable, "2.00", Unavailable, Unavailable, Unavailable, Unavailable}),
 	)
 
 	DescribeTable("validate rate series and resource identity", func(change func(model.Vector) model.Vector, expected string, present bool) {
@@ -199,14 +201,14 @@ var _ = Describe("Domain performance from Prometheus", func() {
 		Expect(out).To(ContainSubstring("Domain performance (Prometheus, lookback 5m0s, evaluated at"))
 		lines := strings.Split(strings.SplitN(out, "\nGuest filesystems", 2)[0], "\n")
 		fields := strings.Fields(lines[len(lines)-2])
-		Expect(normalizedReportLines(out)).To(ContainElement("DISK READ IOPS WRITE IOPS TOTAL IOPS READ MiB/s WRITE MiB/s READ LATENCY ms WRITE LATENCY ms TOTAL LATENCY ms FLUSH OPS/s FLUSH LATENCY ms"))
-		Expect(fields).To(HaveLen(11))
+		Expect(normalizedReportLines(out)).To(ContainElement("DISK READ IOPS WRITE IOPS TOTAL IOPS READ MiB/s WRITE MiB/s READ KiB/op WRITE KiB/op READ LATENCY ms WRITE LATENCY ms TOTAL LATENCY ms FLUSH OPS/s FLUSH LATENCY ms"))
+		Expect(fields).To(HaveLen(13))
 		Expect(fields[0]).To(Equal("data"))
 		Expect(fields[1:]).To(Equal(expected))
 	},
-		Entry("VMI disk alias with only read rates", "data", false, []string{"10.00", Unavailable, Unavailable, Unavailable, Unavailable, "2.00", Unavailable, Unavailable, "2.00", "5.00"}),
-		Entry("VMI disk alias with read and write rates", "data", true, []string{"10.00", "2.00", "12.00", Unavailable, Unavailable, "2.00", "5.00", "2.50", "2.00", "5.00"}),
-		Entry("unmapped target name", "vdb", false, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
+		Entry("VMI disk alias with only read rates", "data", false, []string{"10.00", Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, "2.00", Unavailable, Unavailable, "2.00", "5.00"}),
+		Entry("VMI disk alias with read and write rates", "data", true, []string{"10.00", "2.00", "12.00", Unavailable, Unavailable, Unavailable, Unavailable, "2.00", "5.00", "2.50", "2.00", "5.00"}),
+		Entry("unmapped target name", "vdb", false, []string{Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable, Unavailable}),
 	)
 
 	It("propagates cancellation without hiding the resource report", func() {

@@ -41,7 +41,8 @@ const (
 	FlushTimesSeconds        = "flush_times_seconds_total"
 	kubevirtVmiStoragePrefix = "kubevirt_vmi_storage_"
 	driveLabel               = "drive"
-	bytesPerMiB              = 1024 * 1024
+	bytesPerKiB              = 1024
+	bytesPerMiB              = 1024 * bytesPerKiB
 	millisecondsPerSecond    = 1000
 	noCompletedOperations    = "-"
 )
@@ -76,7 +77,7 @@ func (d domainLevel) print(cmd *cobra.Command, vmi *v1.VirtualMachineInstance, d
 	} else {
 		fmt.Fprintln(w, "\nDomain performance (Prometheus): unavailable")
 	}
-	fmt.Fprintln(w, "DISK\tREAD IOPS\tWRITE IOPS\tTOTAL IOPS\tREAD MiB/s\tWRITE MiB/s\tREAD LATENCY ms\tWRITE LATENCY ms\tTOTAL LATENCY ms\tFLUSH OPS/s\tFLUSH LATENCY ms")
+	fmt.Fprintln(w, "DISK\tREAD IOPS\tWRITE IOPS\tTOTAL IOPS\tREAD MiB/s\tWRITE MiB/s\tREAD KiB/op\tWRITE KiB/op\tREAD LATENCY ms\tWRITE LATENCY ms\tTOTAL LATENCY ms\tFLUSH OPS/s\tFLUSH LATENCY ms")
 	for _, disk := range disks {
 		values := diskPerformance(rates[disk.name])
 		fmt.Fprintf(w, "%s\t%s\n", disk.name, strings.Join(values, "\t"))
@@ -153,11 +154,13 @@ func diskPerformance(rates diskRates) []string {
 		formatDomainRate(totalOps, hasTotalOps),
 		formatDomainRate(readBytes/bytesPerMiB, hasReadBytes),
 		formatDomainRate(writeBytes/bytesPerMiB, hasWriteBytes),
-		formatDomainLatency(readOps, readSeconds, hasReadOps && hasReadSeconds),
-		formatDomainLatency(writeOps, writeSeconds, hasWriteOps && hasWriteSeconds),
-		formatDomainLatency(totalOps, readSeconds+writeSeconds, hasTotalOps && hasReadSeconds && hasWriteSeconds),
+		formatDomainPerOperation(readBytes, readOps, 1.0/bytesPerKiB, hasReadBytes && hasReadOps),
+		formatDomainPerOperation(writeBytes, writeOps, 1.0/bytesPerKiB, hasWriteBytes && hasWriteOps),
+		formatDomainPerOperation(readSeconds, readOps, millisecondsPerSecond, hasReadSeconds && hasReadOps),
+		formatDomainPerOperation(writeSeconds, writeOps, millisecondsPerSecond, hasWriteSeconds && hasWriteOps),
+		formatDomainPerOperation(readSeconds+writeSeconds, totalOps, millisecondsPerSecond, hasReadSeconds && hasWriteSeconds && hasTotalOps),
 		formatDomainRate(flushOps, hasFlushOps),
-		formatDomainLatency(flushOps, flushSeconds, hasFlushOps && hasFlushSeconds),
+		formatDomainPerOperation(flushSeconds, flushOps, millisecondsPerSecond, hasFlushSeconds && hasFlushOps),
 	}
 }
 
@@ -168,13 +171,13 @@ func formatDomainRate(rate float64, available bool) string {
 	return fmt.Sprintf(metricValueFormat, rate)
 }
 
-func formatDomainLatency(operations, seconds float64, available bool) string {
+func formatDomainPerOperation(amount, operations, scale float64, available bool) string {
 	switch {
 	case !available:
 		return Unavailable
 	case operations <= 0:
 		return noCompletedOperations
 	default:
-		return fmt.Sprintf(metricValueFormat, seconds/operations*millisecondsPerSecond)
+		return fmt.Sprintf(metricValueFormat, amount/operations*scale)
 	}
 }
