@@ -24,6 +24,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -63,9 +64,9 @@ type storageCommand struct {
 }
 
 type diskInfo struct {
-	name, source, pvc, pv, driver, pvcStatus, attachment string
-	hasCSIDriver                                         bool
-	pvcUID                                               types.UID
+	name, source, pvc, pv, driver, pvcStatus, attachment, hostPath string
+	hasCSIDriver                                                   bool
+	pvcUID                                                         types.UID
 }
 
 // NewCommand creates the storage inspection commands.
@@ -218,6 +219,7 @@ func (s *storageCommand) inspectVM(cmd *cobra.Command, name string) error {
 		for _, row := range rows {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", row.name, row.source, row.pvc, row.pv, row.driver, row.pvcStatus, row.attachment)
 		}
+		printHostStorage(w, rows)
 	}
 	if err := w.Flush(); err != nil {
 		return err
@@ -295,6 +297,9 @@ func (s *storageCommand) inspectDisk(cmd *cobra.Command, volume v1.Volume, curre
 		row.driver = Unresolved
 		cmd.PrintErrf("Warning: PV %s claim reference does not match PVC %s/%s\n", row.pv, s.namespace, pvc.Name)
 		return row
+	}
+	if pvc.Status.Phase == corev1.ClaimBound {
+		row.hostPath = pvHostPath(pv)
 	}
 	if pv.Spec.CSI == nil {
 		row.driver, row.attachment = NotCSI, NotApplicable

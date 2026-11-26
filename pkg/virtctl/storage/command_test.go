@@ -304,6 +304,41 @@ var _ = Describe("Storage inspection", func() {
 		Entry("denied DataVolume access", func(f *fixture) { useDataVolume(f, "import-a", "claim-a"); f.fail = "datavolumes" }, "data DataVolume - - - unresolved unavailable", "forbidden"),
 	)
 
+	DescribeTable("show the PV host path for each disk", func(change func(*fixture), expected []string) {
+		f := newFixture()
+		change(f)
+
+		out, _, err := f.run("inspect", "demo")
+		Expect(err).NotTo(HaveOccurred())
+		_, section, found := strings.Cut(out, "\nHost storage:\n")
+		Expect(found).To(BeTrue())
+		hostStorage, _, _ := strings.Cut(section, "\n\n")
+		Expect(normalizedReportLines(hostStorage)).To(Equal(append([]string{"DISK HOST PATH"}, expected...)))
+	},
+		Entry("hostPath PV", func(f *fixture) {
+			f.pv.Spec.PersistentVolumeSource = corev1.PersistentVolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/local/data"}}
+		}, []string{"data /var/local/data"}),
+		Entry("local PV and a disk without a PV", func(f *fixture) {
+			f.pv.Spec.PersistentVolumeSource = corev1.PersistentVolumeSource{Local: &corev1.LocalVolumeSource{Path: "/dev/local-data"}}
+			f.vmi.Spec.Domain.Devices.Disks = append(f.vmi.Spec.Domain.Devices.Disks, v1.Disk{Name: "root"})
+			f.vmi.Spec.Volumes = append(f.vmi.Spec.Volumes, v1.Volume{
+				Name:         "root",
+				VolumeSource: v1.VolumeSource{ContainerDisk: &v1.ContainerDiskSource{Image: "example/disk"}},
+			})
+		}, []string{"data /dev/local-data", "root -"}),
+		Entry("CSI volume handle that resembles a path", func(f *fixture) {
+			f.pv.Spec.CSI.VolumeHandle = "/var/csi/data"
+		}, []string{"data -"}),
+		Entry("PV named by a pending claim", func(f *fixture) {
+			f.pvc.Status.Phase = corev1.ClaimPending
+			f.pv.Spec.PersistentVolumeSource = corev1.PersistentVolumeSource{Local: &corev1.LocalVolumeSource{Path: "/dev/local-data"}}
+		}, []string{"data -"}),
+		Entry("PV claim reference does not match", func(f *fixture) {
+			f.pv.Spec.ClaimRef.UID = "another-claim"
+			f.pv.Spec.PersistentVolumeSource = corev1.PersistentVolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/var/local/data"}}
+		}, []string{"data -"}),
+	)
+
 	DescribeTable("show the source of VM and node context", func(change func(*fixture), expected []string, warning string) {
 		f := newFixture()
 		change(f)
